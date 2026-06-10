@@ -72,16 +72,16 @@ async function getToken() {
     const res = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account: accounts[0] });
     return res.accessToken;
   } catch {
-    const res = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
-    return res.accessToken;
+    // Fallback: redirect (funktioniert auf iOS)
+    await msalInstance.acquireTokenRedirect({ scopes: SCOPES });
+    return null;
   }
 }
 
 async function doLogin() {
   try {
-    const res = await msalInstance.loginPopup({ scopes: SCOPES });
-    accessToken = res.accessToken;
-    startApp();
+    await msalInstance.loginRedirect({ scopes: SCOPES });
+    // Seite wird weitergeleitet - handleRedirectPromise übernimmt
   } catch(e) {
     alert("Anmeldung fehlgeschlagen: " + e.message);
   }
@@ -188,7 +188,10 @@ async function startApp() {
 msalInstance.handleRedirectPromise().then(async (res) => {
   if (res) { accessToken = res.accessToken; startApp(); return; }
   const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) { startApp(); }
+  if (accounts.length > 0) { startApp(); return; }
+  // Noch nicht eingeloggt - Login-Screen zeigen (nichts tun)
+}).catch(e => {
+  console.error("Redirect error:", e);
 });
 </script>
 
