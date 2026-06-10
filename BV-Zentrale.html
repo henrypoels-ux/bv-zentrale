@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BV-Zentrale – Poels Massivbau</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<style>
+body { margin: 0; background: #0d1117; }
+#auth-screen {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 100vh; background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', sans-serif;
+}
+#auth-screen h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+#auth-screen p  { font-size: 14px; color: #7d8590; margin-bottom: 32px; }
+#login-btn {
+  background: #58a6ff; border: none; color: #0d1117; font-size: 15px; font-weight: 600;
+  padding: 12px 28px; border-radius: 8px; cursor: pointer;
+}
+#login-btn:hover { opacity: 0.88; }
+#sync-status {
+  position: fixed; bottom: 16px; right: 16px; font-size: 11px; color: #7d8590;
+  background: #161b22; border: 1px solid rgba(255,255,255,.08); border-radius: 6px;
+  padding: 4px 10px; z-index: 9999; pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<div id="auth-screen">
+  <h1>BV-Zentrale</h1>
+  <p>Melde dich mit deinem Poels Massivbau Konto an</p>
+  <button id="login-btn" onclick="doLogin()">Mit Microsoft anmelden</button>
+</div>
+
+<div id="root" style="display:none"></div>
+<div id="sync-status"></div>
+
+<script>
+// ── MSAL Konfiguration ──────────────────────────────────────────
+const msalConfig = {
+  auth: {
+    clientId: "510b47e6-b9c0-47dd-9840-9ee840a590e7",
+    authority: "https://login.microsoftonline.com/0b826b9f-bc18-4efb-af3d-8f92ea282f7b",
+    redirectUri: window.location.href.split('?')[0],
+  },
+  cache: { cacheLocation: "localStorage" }
+};
+const msalInstance = new msal.PublicClientApplication(msalConfig);
+const SCOPES = ["Files.ReadWrite", "User.Read"];
+
+// OneDrive Pfad – Datei liegt in _Projekte/BV-Zentrale/
+const DRIVE_FOLDER = "_Projekte/BV-Zentrale";
+const DATA_FILE    = "bv-zentrale-data.json";
+
+let accessToken = null;
+let saveTimer   = null;
+let cachedItemId = null;
+
+function setStatus(msg) {
+  const el = document.getElementById("sync-status");
+  if (el) el.textContent = msg;
+}
+
+async function getToken() {
+  const accounts = msalInstance.getAllAccounts();
+  if (!accounts.length) return null;
+  try {
+    const res = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account: accounts[0] });
+    return res.accessToken;
+  } catch {
+    const res = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
+    return res.accessToken;
+  }
+}
+
+async function doLogin() {
+  try {
+    const res = await msalInstance.loginPopup({ scopes: SCOPES });
+    accessToken = res.accessToken;
+    startApp();
+  } catch(e) {
+    alert("Anmeldung fehlgeschlagen: " + e.message);
+  }
+}
+
+// ── OneDrive JSON lesen/schreiben ────────────────────────────────
+async function odRead() {
+  const tok = await getToken();
+  // Erst Item-ID suchen (gecacht für Performance)
+  if (!cachedItemId) {
+    const r = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/root:/${DRIVE_FOLDER}/${DATA_FILE}`,
+      { headers: { Authorization: "Bearer " + tok } }
+    );
+    if (!r.ok) return null; // Datei existiert noch nicht
+    const meta = await r.json();
+    cachedItemId = meta.id;
+  }
+  const r2 = await fetch(
+    `https://graph.microsoft.com/v1.0/me/drive/items/${cachedItemId}/content`,
+    { headers: { Authorization: "Bearer " + tok } }
+  );
+  if (!r2.ok) return null;
+  return await r2.json();
+}
+
+async function odWrite(data) {
+  const tok = await getToken();
+  const json = JSON.stringify(data);
+  // PUT erstellt oder überschreibt die Datei
+  const r = await fetch(
+    `https://graph.microsoft.com/v1.0/me/drive/root:/${DRIVE_FOLDER}/${DATA_FILE}:/content`,
+    {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" },
+      body: json
+    }
+  );
+  if (!r.ok) throw new Error("Speichern fehlgeschlagen: " + r.status);
+  const meta = await r.json();
+  cachedItemId = meta.id;
+}
+
+// ── window.storage Shim (kompatibel mit der App) ─────────────────
+// Alle Daten in einem einzigen JSON-Objekt auf OneDrive
+let _memCache = null;
+
+window.storage = {
+  async get(key) {
+    if (!_memCache) {
+      setStatus("Lade Daten...");
+      try { _memCache = (await odRead()) || {}; } catch { _memCache = {}; }
+      setStatus("");
+    }
+    const val = _memCache[key];
+    return val !== undefined ? { key, value: typeof val === "string" ? val : JSON.stringify(val) } : null;
+  },
+  async set(key, value) {
+    if (!_memCache) _memCache = {};
+    _memCache[key] = value;
+    // Debounced save – schreibt maximal alle 2s
+    clearTimeout(saveTimer);
+    setStatus("Speichern...");
+    saveTimer = setTimeout(async () => {
+      try {
+        await odWrite(_memCache);
+        setStatus("Gespeichert ✓");
+        setTimeout(() => setStatus(""), 2000);
+      } catch(e) {
+        setStatus("Fehler beim Speichern!");
+        console.error(e);
+      }
+    }, 2000);
+    return { key, value };
+  },
+  async delete(key) {
+    if (_memCache) delete _memCache[key];
+    return { key, deleted: true };
+  }
+};
+
+// ── App starten ──────────────────────────────────────────────────
+async function startApp() {
+  document.getElementById("auth-screen").style.display = "none";
+  document.getElementById("root").style.display = "block";
+
+  // Ordner anlegen falls nicht vorhanden (silent)
+  try {
+    const tok = await getToken();
+    await fetch(
+      "https://graph.microsoft.com/v1.0/me/drive/root:/_Projekte:/children",
+      {
+        method: "POST",
+        headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "BV-Zentrale", folder: {}, "@microsoft.graph.conflictBehavior": "ignore" })
+      }
+    );
+  } catch {}
+
+  ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+}
+
+// Prüfen ob schon eingeloggt (nach Redirect)
+msalInstance.handleRedirectPromise().then(async (res) => {
+  if (res) { accessToken = res.accessToken; startApp(); return; }
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) { startApp(); }
+});
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+/* ─── Storage Keys ─── */
+const SK_TASKS   = "bv-mgr-v3";
+const SK_JOURFIX = "bv-jourfix-v1";
+const SK_JF_BVS  = "bv-jourfix-bvs-v1";
+
+/* ─── Status / Assignee ─── */
+const STATUS_CYCLE   = ["offen", "in-arbeit", "wartend", "erledigt"];
+const ASSIGNEE_CYCLE = ["–", "HP", "DP"];
+const STATUS_META = {
+  offen:      { label: "Offen",     color: "#64748b", bg: "rgba(100,116,139,.18)", border: "rgba(100,116,139,.35)" },
+  "in-arbeit":{ label: "In Arbeit", color: "#f59e0b", bg: "rgba(245,158,11,.18)",  border: "rgba(245,158,11,.35)"  },
+  wartend:    { label: "Wartend",   color: "#818cf8", bg: "rgba(129,140,248,.18)", border: "rgba(129,140,248,.35)" },
+  erledigt:   { label: "Erledigt",  color: "#4ade80", bg: "rgba(74,222,128,.18)",  border: "rgba(74,222,128,.35)"  },
+};
+
+/* ─── Jour-Fix Topics ─── */
+const JF_TOPICS_ACTIVE = [
+  { id: "vergabe",     label: "Stand der Vergabe",               hint: "Excel – Auftragstabelle",  src: "excel" },
+  { id: "bautenstand", label: "Aktueller Bautenstand",           hint: "Capmo – Bautagebuch",      src: "capmo" },
+  { id: "terminplan",  label: "Terminplan",                      hint: "Capmo – Bauzeitenplanung", src: "capmo" },
+  { id: "gewerke",     label: "Kommende Gewerke",                hint: "Naechste Vergaben",        src: "both"  },
+  { id: "maengel",     label: "Aktuelle Themen / Offene Maengel",hint: "Capmo – Tickets",          src: "capmo" },
+  { id: "zahlung",     label: "Zahlungsplan / Checkliste",       hint: "Excel – Zahlungsplan",     src: "excel" },
+];
+const JF_TOPICS_DONE = [
+  { id: "maengel", label: "Offene Maengel", hint: "Capmo – Tickets", src: "capmo" },
+];
+
+/* ─── BV Lists ─── */
+const ACTIVE_BVS = [
+  { num:"6022005", name:"BV Ünal" },
+  { num:"6024010", name:"BV Kasseb" },
+  { num:"6024011", name:"BV Kissler" },
+  { num:"6024012", name:"BV Hirsch" },
+  { num:"6024013", name:"BV Wortmann" },
+  { num:"6024014", name:"BV Hanika" },
+  { num:"6024015", name:"BV Barthelt (Geldern)" },
+  { num:"6024016", name:"BV Gesthuysen" },
+  { num:"6024017", name:"BV Goecke (Haus 7)" },
+  { num:"6024018", name:"BV Eichbaum" },
+  { num:"6025002", name:"BV Hundorf" },
+  { num:"6025003", name:"BV Müller Reinke" },
+  { num:"6025004", name:"BV Maslowski" },
+  { num:"6025005", name:"BV Redlin" },
+  { num:"6025006", name:"BV Bruns" },
+  { num:"6025007", name:"BV Ganea" },
+  { num:"6025008", name:"BV Bartel (Essen)" },
+  { num:"6025009", name:"BV Brenner (Veert)" },
+  { num:"6025010", name:"BV Frillendorf MFH" },
+  { num:"6025011", name:"BV Pütz" },
+  { num:"6025012", name:"BV Horn" },
+  { num:"6025014", name:"BV Fischer Kehrmann (Essen)" },
+  { num:"6025015", name:"BV Waggeling Müller (Eyll)" },
+  { num:"6025016", name:"BV Kerstein" },
+  { num:"6025017", name:"BV Sawitzki" },
+  { num:"6025018", name:"BV Neumann" },
+  { num:"6025019", name:"BV Rauhut" },
+  { num:"6025020", name:"BV Demir" },
+  { num:"6025021", name:"BV Geldi" },
+  { num:"6026001", name:"BV Celik" },
+  { num:"6026002", name:"BV Ulrich" },
+];
+const DONE_BVS = [
+  { num:"6024004", name:"BV Frick" },
+  { num:"6024006", name:"BV Bothe (Stelte)" },
+  { num:"6024007", name:"BV Hollender" },
+  { num:"6024009", name:"BV Schuppan" },
+];
+
+/* ─── Task Manager Default Data ─── */
+const mkTask = (title, assignee="–", status="offen") => ({
+  id: uid(), title, assignee, status, note: "", expanded: false, subtasks: [],
+});
+const DEFAULT_TASKS = [
+  { id:uid(), name:"Bothe", tasks:[
+    mkTask("Lüfter → Tophoven"),
+    mkTask("Fuger → Sapsiz","DP"),
+    mkTask("Fenster → GW"),
+  ]},
+  { id:uid(), name:"Berg", tasks:[ mkTask("Terrassenbelag Rest","DP") ]},
+  { id:uid(), name:"Blümke", tasks:[ mkTask("Terrassenbelag Rest","DP") ]},
+  { id:uid(), name:"Frick", tasks:[ mkTask("Malerarbeiten TH + Federdeckel → Joel Kehrbusch","HP") ]},
+  { id:uid(), name:"Janssen", tasks:[ mkTask("Fensterbank ändern") ]},
+  { id:uid(), name:"Schuppan", tasks:[ mkTask("Rückmeldung abwarten offene Punkte","–","wartend") ]},
+  { id:uid(), name:"Hollender", tasks:[
+    mkTask("Rückmeldung Schlosser erwartet bzgl. Gelaender/Terrassenbelag","DP","wartend"),
+    mkTask("Lüftungsschlitze Fassade → Eldem anrufen","HP"),
+  ]},
+  { id:uid(), name:"Hanika", tasks:[ mkTask("Rückmeldung erwartet","HP","wartend") ]},
+  { id:uid(), name:"Müller Reinke", tasks:[
+    mkTask("Rückmeldung zu Eigenleistungen – Gewerke einplanen","DP","wartend"),
+  ]},
+  { id:uid(), name:"Bruns", tasks:[
+    mkTask("Installateur klären","DP"),
+    mkTask("Weitere Gewerke einplanen","DP"),
+    mkTask("Fenstereinbau KW 22 → Fensterbänke ALU","–","in-arbeit"),
+    mkTask("Fuger klären"),
+    mkTask("Angebot Riemchen Garage","HP"),
+  ]},
+  { id:uid(), name:"Hundorf", tasks:[ mkTask("Klinkerkolonne","HP") ]},
+];
+
+/* ─── Default Jour-Fix State ─── */
+function defaultJFState() {
+  const s = { active:{}, done:{} };
+  ACTIVE_BVS.forEach((_, i) => {
+    s.active[i] = {};
+    JF_TOPICS_ACTIVE.forEach(t => { s.active[i][t.id] = false; });
+  });
+  DONE_BVS.forEach((_, i) => {
+    s.done[i] = {};
+    JF_TOPICS_DONE.forEach(t => { s.done[i][t.id] = false; });
+  });
+  return s;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   CSS
+══════════════════════════════════════════════════════════════ */
+const CSS = `
+*, *::before, *::after { box-sizing: border-box; margin:0; padding:0; }
+
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --surface2: #1c2230;
+  --border:   rgba(255,255,255,.08);
+  --border2:  rgba(255,255,255,.14);
+  --text:     #e6edf3;
+  --muted:    #7d8590;
+  --accent:   #58a6ff;
+  --font:     'IBM Plex Sans', sans-serif;
+  --mono:     'IBM Plex Mono', monospace;
+  --radius:   8px;
+  --radius-lg:12px;
+}
+
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size:14px; min-height:100vh; }
+
+/* ─── Nav ─── */
+.nav { display:flex; gap:4px; padding:16px 20px 0; border-bottom:1px solid var(--border); background:var(--surface); position:sticky; top:0; z-index:100; align-items:flex-end; }
+.nav-btn { padding:10px 18px; border:none; background:none; color:var(--muted); font-family:var(--font); font-size:13px; font-weight:500; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .15s; white-space:nowrap; }
+.nav-btn:hover { color:var(--text); }
+.nav-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+.nav-spacer { flex:1; }
+.print-btn { margin-bottom:6px; margin-right:4px; padding:6px 14px; background:none; border:1px solid var(--border2); border-radius:var(--radius); color:var(--muted); font-family:var(--font); font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; transition:all .15s; }
+.print-btn:hover { color:var(--text); border-color:rgba(255,255,255,.3); }
+
+/* ─── Layout ─── */
+.page { padding:24px 20px; max-width:860px; margin:0 auto; }
+
+/* ─── Summary strip ─── */
+.summary { display:flex; gap:10px; margin-bottom:24px; flex-wrap:wrap; }
+.sum-card { flex:1; min-width:100px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; }
+.sum-val { font-size:22px; font-weight:600; color:var(--text); font-family:var(--mono); }
+.sum-label { font-size:11px; color:var(--muted); margin-top:2px; }
+
+/* ─── Section labels ─── */
+.section-hd { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:20px 0 10px; padding-left:2px; }
+
+/* ─── Jour Fix Cards ─── */
+.jf-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); margin-bottom:8px; overflow:hidden; }
+.jf-header { display:flex; align-items:center; gap:10px; padding:12px 16px; cursor:pointer; transition:background .12s; }
+.jf-header:hover { background:var(--surface2); }
+.jf-num { font-size:11px; color:var(--muted); min-width:56px; font-family:var(--mono); }
+.jf-title { font-size:14px; font-weight:500; flex:1; }
+.badge-done { font-size:10px; font-weight:600; background:rgba(74,222,128,.15); color:#4ade80; padding:2px 8px; border-radius:4px; border:1px solid rgba(74,222,128,.25); }
+.jf-prog { display:flex; align-items:center; gap:8px; }
+.jf-bar { width:64px; height:3px; background:var(--border); border-radius:2px; overflow:hidden; }
+.jf-fill { height:100%; background:#4ade80; border-radius:2px; transition:width .3s; }
+.jf-pct { font-size:11px; color:var(--muted); font-family:var(--mono); min-width:28px; text-align:right; }
+.jf-chev { color:var(--muted); font-size:14px; transition:transform .2s; }
+.jf-chev.open { transform:rotate(180deg); }
+.jf-body { border-top:1px solid var(--border); }
+.jf-row { display:flex; align-items:flex-start; gap:12px; padding:10px 16px; border-bottom:1px solid var(--border); }
+.jf-row:last-of-type { border-bottom:none; }
+.jf-row input[type=checkbox] { width:15px; height:15px; margin-top:1px; cursor:pointer; accent-color:#4ade80; flex-shrink:0; }
+.jf-row-info { flex:1; }
+.jf-row-label { font-size:13px; line-height:1.4; }
+.jf-row-label.done { text-decoration:line-through; color:var(--muted); }
+.jf-row-hint { display:flex; align-items:center; gap:6px; margin-top:3px; font-size:11px; color:var(--muted); }
+.src-tag { font-size:10px; font-weight:600; padding:1px 6px; border-radius:3px; }
+.src-capmo { background:rgba(88,166,255,.15); color:#58a6ff; }
+.src-excel { background:rgba(74,222,128,.12); color:#4ade80; }
+.src-both { background:rgba(245,158,11,.12); color:#f59e0b; }
+.jf-footer { display:flex; align-items:center; justify-content:space-between; padding:9px 16px; background:var(--surface2); border-top:1px solid var(--border); }
+.btn-ghost { background:none; border:none; color:var(--muted); font-family:var(--font); font-size:12px; cursor:pointer; display:flex; align-items:center; gap:5px; }
+.btn-ghost:hover { color:var(--text); }
+.done-badge { font-size:12px; color:#4ade80; font-weight:500; display:flex; align-items:center; gap:4px; }
+
+/* ─── Task Manager ─── */
+.filters { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; align-items:center; }
+.filter-group { display:flex; gap:4px; align-items:center; }
+.filter-group span { font-size:11px; color:var(--muted); padding:0 4px; }
+.f-btn { padding:5px 12px; border:1px solid var(--border2); border-radius:20px; background:none; color:var(--muted); font-family:var(--font); font-size:12px; cursor:pointer; transition:all .12s; }
+.f-btn:hover { border-color:rgba(255,255,255,.25); color:var(--text); }
+.f-btn.active { background:var(--accent); border-color:var(--accent); color:#0d1117; font-weight:600; }
+
+/* ─── Drag & Drop ─── */
+.tm-project { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); margin-bottom:12px; overflow:hidden; transition:box-shadow .15s, opacity .15s, border-color .15s; }
+.tm-project.dragging { opacity:.45; border-color:var(--accent); }
+.tm-project.drag-over { box-shadow:0 0 0 2px var(--accent); border-color:var(--accent); }
+.tm-project.drag-above { border-top:2px solid var(--accent); }
+.tm-project.drag-below { border-bottom:2px solid var(--accent); }
+.tm-proj-hd { display:flex; align-items:center; gap:10px; padding:12px 16px; }
+.drag-handle { color:var(--muted); cursor:grab; font-size:16px; padding:0 2px; user-select:none; line-height:1; transition:color .12s; }
+.drag-handle:hover { color:var(--text); }
+.drag-handle:active { cursor:grabbing; }
+.tm-proj-name { font-size:14px; font-weight:600; flex:1; }
+.tm-proj-count { font-size:11px; color:var(--muted); font-family:var(--mono); }
+.btn-icon { background:none; border:none; color:var(--muted); cursor:pointer; font-size:16px; padding:2px 4px; line-height:1; transition:color .12s; }
+.btn-icon:hover { color:var(--text); }
+.tm-task { display:flex; flex-direction:column; border-top:1px solid var(--border); }
+.tm-task-row { display:flex; align-items:center; gap:8px; padding:8px 16px; transition:background .1s; }
+.tm-task-row:hover { background:var(--surface2); }
+.status-pill { font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px; cursor:pointer; white-space:nowrap; border:1px solid; transition:all .12s; }
+.assignee-pill { font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px; cursor:pointer; background:var(--surface2); border:1px solid var(--border2); color:var(--text); min-width:34px; text-align:center; transition:background .12s; }
+.assignee-pill:hover { background:rgba(255,255,255,.1); }
+.task-title { flex:1; font-size:13px; cursor:pointer; }
+.task-title.done { text-decoration:line-through; color:var(--muted); }
+.tm-expand { background:var(--surface2); border-top:1px solid var(--border); padding:10px 16px 12px 44px; }
+.note-inp { width:100%; background:var(--bg); border:1px solid var(--border2); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:12px; padding:6px 10px; resize:none; outline:none; }
+.note-inp:focus { border-color:var(--accent); }
+.subs { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
+.sub-row { display:flex; align-items:center; gap:8px; }
+.sub-row input[type=checkbox] { accent-color:var(--accent); cursor:pointer; }
+.sub-title { font-size:12px; color:var(--muted); }
+.sub-title.done { text-decoration:line-through; }
+.sub-actions { display:flex; gap:6px; margin-top:8px; }
+
+.add-task-row { display:flex; gap:8px; padding:8px 16px; border-top:1px solid var(--border); }
+.add-task-inp { flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:13px; padding:6px 10px; outline:none; }
+.add-task-inp:focus { border-color:var(--accent); }
+
+.btn-primary { background:var(--accent); border:none; color:#0d1117; font-family:var(--font); font-size:12px; font-weight:600; padding:6px 14px; border-radius:var(--radius); cursor:pointer; }
+.btn-primary:hover { opacity:.88; }
+.btn-cancel { background:none; border:1px solid var(--border2); color:var(--muted); font-family:var(--font); font-size:12px; padding:6px 12px; border-radius:var(--radius); cursor:pointer; }
+.btn-cancel:hover { color:var(--text); }
+
+.add-bv-row { display:flex; gap:8px; margin-top:12px; }
+.add-bv-inp { flex:1; background:var(--surface); border:1px solid var(--border2); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:13px; padding:8px 12px; outline:none; }
+.add-bv-inp:focus { border-color:var(--accent); }
+
+.empty { text-align:center; padding:40px; color:var(--muted); font-size:13px; }
+
+/* ─── Print Styles ─── */
+@media print {
+  @page { margin: 15mm 15mm; size: A4; }
+  body { background: #fff !important; color: #111 !important; font-family: Arial, sans-serif !important; font-size:11px !important; }
+  .nav, .filters, .btn-icon, .print-btn, .btn-ghost, .btn-primary, .btn-cancel, .add-task-row, .add-bv-row, .drag-handle, .tm-expand { display:none !important; }
+  .page { padding:0; max-width:100%; }
+  .summary { display:none; }
+  .tm-project { background:#fff !important; border:1px solid #ccc !important; border-radius:4px !important; margin-bottom:10px !important; box-shadow:none !important; break-inside:avoid; }
+  .tm-proj-hd { padding:8px 12px !important; border-bottom:1px solid #ddd; }
+  .tm-proj-name { font-size:13px !important; font-weight:bold !important; color:#111 !important; }
+  .tm-proj-count { color:#666 !important; font-size:10px !important; }
+  .tm-task { break-inside:avoid; }
+  .tm-task-row { padding:5px 12px !important; background:#fff !important; border-bottom:1px solid #eee; }
+  .task-title { color:#111 !important; font-size:11px !important; }
+  .task-title.done { color:#999 !important; }
+  .status-pill { font-size:9px !important; padding:1px 5px !important; border:1px solid #ccc !important; background:#f5f5f5 !important; color:#333 !important; }
+  .assignee-pill { font-size:9px !important; padding:1px 5px !important; background:#f0f0f0 !important; border:1px solid #ddd !important; color:#333 !important; }
+  .print-header { display:block !important; font-size:18px; font-weight:bold; margin-bottom:12px; padding-bottom:8px; border-bottom:2px solid #111; color:#111; }
+  .print-date { display:block !important; font-size:10px; color:#666; margin-bottom:16px; }
+}
+.print-header, .print-date { display:none; }
+`;
+
+/* ══════════════════════════════════════════════════════════════
+   COMPONENTS – Jour Fix
+══════════════════════════════════════════════════════════════ */
+function SrcTag({ src }) {
+  if (src === "capmo") return <span className="src-tag src-capmo">Capmo</span>;
+  if (src === "excel") return <span className="src-tag src-excel">Excel</span>;
+  return <span className="src-tag src-both">Capmo + Excel</span>;
+}
+
+function JFCard({ bv, topics, checks, onToggle, onReset, onDelete, isDone,
+                  onDragStart, onDragEnter, onDragEnd, isDragging, isDragOver }) {
+  const [open, setOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const checked = topics.filter(t => checks[t.id]).length;
+  const pct = Math.round(checked / topics.length * 100);
+  let cls = "jf-card";
+  if (isDragging) cls += " dragging";
+  if (isDragOver) cls += " drag-over";
+  return (
+    <div className={cls} draggable
+      onDragStart={onDragStart} onDragEnter={onDragEnter}
+      onDragEnd={onDragEnd} onDragOver={e => e.preventDefault()}>
+      <div className="jf-header" onClick={() => { if(!confirmDelete) setOpen(o => !o); }}>
+        <span className="drag-handle" title="Verschieben" onClick={e => e.stopPropagation()}>⠿</span>
+        <span className="jf-num">{bv.num}</span>
+        <span className="jf-title">{bv.name}</span>
+        {isDone && <span className="badge-done">Abgeschlossen</span>}
+        <div className="jf-prog">
+          <div className="jf-bar"><div className="jf-fill" style={{width:`${pct}%`}} /></div>
+          <span className="jf-pct">{checked}/{topics.length}</span>
+        </div>
+        <span className={`jf-chev${open?" open":""}`}>▾</span>
+        {confirmDelete ? (
+          <span style={{display:"flex",alignItems:"center",gap:4,marginLeft:4}} onClick={e=>e.stopPropagation()}>
+            <span style={{fontSize:11,color:"#f87171"}}>Löschen?</span>
+            <button className="btn-icon" style={{color:"#4ade80",fontSize:13}} onClick={e=>{e.stopPropagation();onDelete();}}>✓</button>
+            <button className="btn-icon" style={{fontSize:13}} onClick={e=>{e.stopPropagation();setConfirmDelete(false);}}>✕</button>
+          </span>
+        ) : (
+          <button className="btn-icon" style={{marginLeft:4}} title="BV entfernen"
+            onClick={e=>{e.stopPropagation();setConfirmDelete(true);}}>×</button>
+        )}
+      </div>
+      {open && (
+        <div className="jf-body">
+          {topics.map(t => (
+            <div className="jf-row" key={t.id}>
+              <input type="checkbox" checked={!!checks[t.id]} onChange={e => onToggle(t.id, e.target.checked)} />
+              <div className="jf-row-info">
+                <div className={`jf-row-label${checks[t.id]?" done":""}`}>{t.label}</div>
+                <div className="jf-row-hint"><SrcTag src={t.src} />{t.hint}</div>
+              </div>
+            </div>
+          ))}
+          <div className="jf-footer">
+            <button className="btn-ghost" onClick={onReset}>↺ Zurücksetzen</button>
+            {pct === 100 && <span className="done-badge">✓ Abgehakt</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JourFixView({ jfState, setJfState, saveJF, activeBVs, setActiveBVs, doneBVs, setDoneBVs, saveBVs }) {
+
+  /* ── Drag state ── */
+  const dragIdx  = useRef(null);
+  const dragOver = useRef(null);
+  const [draggingId, setDraggingId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
+
+  /* ── Add-BV state ── */
+  const [addingActive, setAddingActive] = useState(false);
+  const [addingDone,   setAddingDone]   = useState(false);
+  const [newNum,  setNewNum]  = useState("");
+  const [newName, setNewName] = useState("");
+
+  /* ── Helpers ── */
+  const toggle = (kind, bvId, tid, val) => {
+    const next = { ...jfState, [kind]: { ...jfState[kind], [bvId]: { ...(jfState[kind][bvId]||{}), [tid]: val } } };
+    setJfState(next); saveJF(next);
+  };
+  const reset = (kind, bvId, topics) => {
+    const cleared = {};
+    topics.forEach(t => { cleared[t.id] = false; });
+    const next = { ...jfState, [kind]: { ...jfState[kind], [bvId]: cleared } };
+    setJfState(next); saveJF(next);
+  };
+  const deleteBV = (kind, bvId) => {
+    const next = { ...jfState };
+    delete next[kind][bvId];
+    setJfState(next); saveJF(next);
+    if (kind === "active") { const u = activeBVs.filter(b=>b.id!==bvId); setActiveBVs(u); saveBVs(u, doneBVs); }
+    else                   { const u = doneBVs.filter(b=>b.id!==bvId);   setDoneBVs(u);   saveBVs(activeBVs, u); }
+  };
+  const addBV = (kind) => {
+    if (!newName.trim()) return;
+    const bv = { id: uid(), num: newNum.trim()||"–", name: newName.trim() };
+    const topics = kind==="active" ? JF_TOPICS_ACTIVE : JF_TOPICS_DONE;
+    const checks = {}; topics.forEach(t => { checks[t.id]=false; });
+    const nextJF = { ...jfState, [kind]: { ...jfState[kind], [bv.id]: checks } };
+    setJfState(nextJF); saveJF(nextJF);
+    if (kind==="active") { const u=[...activeBVs,bv]; setActiveBVs(u); saveBVs(u, doneBVs); }
+    else                 { const u=[...doneBVs,bv];   setDoneBVs(u);   saveBVs(activeBVs,u); }
+    setNewNum(""); setNewName(""); setAddingActive(false); setAddingDone(false);
+  };
+
+  /* ── Drag handlers ── */
+  const mkDrag = (kind, list, setList) => ({
+    start: (idx, id) => { dragIdx.current=idx; setDraggingId(id); },
+    enter: (idx, id) => { dragOver.current=idx; setDragOverId(id); },
+    end:   () => {
+      const from=dragIdx.current, to=dragOver.current;
+      if (from!==null && to!==null && from!==to) {
+        const next=[...list]; const [m]=next.splice(from,1); next.splice(to,0,m);
+        setList(next);
+        if (kind==="active") saveBVs(next, doneBVs);
+        else                 saveBVs(activeBVs, next);
+      }
+      dragIdx.current=null; dragOver.current=null; setDraggingId(null); setDragOverId(null);
+    }
+  });
+  const dragA = mkDrag("active", activeBVs, setActiveBVs);
+  const dragD = mkDrag("done",   doneBVs,   setDoneBVs);
+
+  /* ── Summary ── */
+  const doneActive = activeBVs.filter(bv => JF_TOPICS_ACTIVE.every(t => jfState.active?.[bv.id]?.[t.id])).length;
+  const doneDone   = doneBVs.filter(bv   => JF_TOPICS_DONE.every(t   => jfState.done?.[bv.id]?.[t.id])).length;
+  const totalChecked = activeBVs.reduce((s,bv) => s+JF_TOPICS_ACTIVE.filter(t=>jfState.active?.[bv.id]?.[t.id]).length,0)
+                     + doneBVs.reduce((s,bv)   => s+JF_TOPICS_DONE.filter(t=>jfState.done?.[bv.id]?.[t.id]).length,0);
+  const totalAll = activeBVs.length*JF_TOPICS_ACTIVE.length + doneBVs.length*JF_TOPICS_DONE.length;
+
+  return (
+    <div className="page">
+      <div className="summary">
+        <div className="sum-card"><div className="sum-val">{activeBVs.length}</div><div className="sum-label">Laufende BV</div></div>
+        <div className="sum-card"><div className="sum-val">{doneActive}</div><div className="sum-label">BV abgehakt</div></div>
+        <div className="sum-card"><div className="sum-val">{doneBVs.length}</div><div className="sum-label">Abgeschl. BV</div></div>
+        <div className="sum-card"><div className="sum-val">{doneDone}</div><div className="sum-label">Mängel abgehakt</div></div>
+        <div className="sum-card"><div className="sum-val">{totalChecked}/{totalAll}</div><div className="sum-label">Punkte gesamt</div></div>
+      </div>
+
+      <div className="section-hd">▸ Laufende Bauvorhaben</div>
+      {activeBVs.map((bv, i) => (
+        <JFCard key={bv.id} bv={bv} topics={JF_TOPICS_ACTIVE}
+          checks={jfState.active?.[bv.id] || {}}
+          onToggle={(tid,val) => toggle("active", bv.id, tid, val)}
+          onReset={() => reset("active", bv.id, JF_TOPICS_ACTIVE)}
+          onDelete={() => deleteBV("active", bv.id)}
+          isDone={false}
+          isDragging={draggingId===bv.id}
+          isDragOver={dragOverId===bv.id && draggingId!==bv.id}
+          onDragStart={() => dragA.start(i, bv.id)}
+          onDragEnter={() => dragA.enter(i, bv.id)}
+          onDragEnd={dragA.end}
+        />
+      ))}
+      {addingActive ? (
+        <div className="add-bv-row">
+          <input className="add-bv-inp" style={{maxWidth:80}} placeholder="Nr." value={newNum} onChange={e=>setNewNum(e.target.value)} />
+          <input className="add-bv-inp" placeholder="BV Name…" value={newName}
+            onChange={e=>setNewName(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter") addBV("active"); if(e.key==="Escape"){ setAddingActive(false); setNewNum(""); setNewName(""); }}}
+            autoFocus />
+          <button className="btn-primary" onClick={()=>addBV("active")}>Hinzufügen</button>
+          <button className="btn-cancel" onClick={()=>{ setAddingActive(false); setNewNum(""); setNewName(""); }}>Abbrechen</button>
+        </div>
+      ) : (
+        <button className="btn-primary" style={{marginTop:8}} onClick={()=>setAddingActive(true)}>+ BV hinzufügen</button>
+      )}
+
+      <div className="section-hd" style={{marginTop:28}}>▸ Abgeschlossene BV – Offene Mängel</div>
+      {doneBVs.map((bv, i) => (
+        <JFCard key={bv.id} bv={bv} topics={JF_TOPICS_DONE}
+          checks={jfState.done?.[bv.id] || {}}
+          onToggle={(tid,val) => toggle("done", bv.id, tid, val)}
+          onReset={() => reset("done", bv.id, JF_TOPICS_DONE)}
+          onDelete={() => deleteBV("done", bv.id)}
+          isDone={true}
+          isDragging={draggingId===bv.id}
+          isDragOver={dragOverId===bv.id && draggingId!==bv.id}
+          onDragStart={() => dragD.start(i, bv.id)}
+          onDragEnter={() => dragD.enter(i, bv.id)}
+          onDragEnd={dragD.end}
+        />
+      ))}
+      {addingDone ? (
+        <div className="add-bv-row">
+          <input className="add-bv-inp" style={{maxWidth:80}} placeholder="Nr." value={newNum} onChange={e=>setNewNum(e.target.value)} />
+          <input className="add-bv-inp" placeholder="BV Name…" value={newName}
+            onChange={e=>setNewName(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter") addBV("done"); if(e.key==="Escape"){ setAddingDone(false); setNewNum(""); setNewName(""); }}}
+            autoFocus />
+          <button className="btn-primary" onClick={()=>addBV("done")}>Hinzufügen</button>
+          <button className="btn-cancel" onClick={()=>{ setAddingDone(false); setNewNum(""); setNewName(""); }}>Abbrechen</button>
+        </div>
+      ) : (
+        <button className="btn-primary" style={{marginTop:8}} onClick={()=>setAddingDone(true)}>+ BV hinzufügen</button>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   COMPONENTS – Task Manager
+══════════════════════════════════════════════════════════════ */
+function TaskRow({ task, onPatch, onDelete, onCycleSt, onCycleAss, onAddSub, onPatchSub, onDelSub }) {
+  const sm = STATUS_META[task.status] || STATUS_META.offen;
+  const [newSub, setNewSub] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState(task.title);
+
+  const commitEdit = () => {
+    if (editVal.trim()) onPatch({ title: editVal.trim() });
+    else setEditVal(task.title);
+    setEditing(false);
+  };
+
+  return (
+    <div className="tm-task">
+      <div className="tm-task-row">
+        <button className="status-pill" style={{color:sm.color,background:sm.bg,borderColor:sm.border}}
+          onClick={() => onCycleSt(task.status)}>{sm.label}</button>
+        {editing ? (
+          <input
+            className="add-task-inp"
+            style={{flex:1, fontSize:13, padding:"3px 8px"}}
+            value={editVal}
+            onChange={e => setEditVal(e.target.value)}
+            onKeyDown={e => { if(e.key==="Enter") commitEdit(); if(e.key==="Escape"){ setEditVal(task.title); setEditing(false); }}}
+            onBlur={commitEdit}
+            autoFocus
+          />
+        ) : (
+          <span className={`task-title${task.status==="erledigt"?" done":""}`}
+            onClick={() => onPatch({expanded:!task.expanded})}>{task.title}</span>
+        )}
+        <button className="btn-icon" title="Bearbeiten"
+          onClick={() => { setEditVal(task.title); setEditing(e => !e); }}
+          style={{fontSize:13, opacity: editing ? 1 : 0.6}}>✎</button>
+        <button className="assignee-pill" onClick={() => onCycleAss(task.assignee)}>{task.assignee}</button>
+        <button className="btn-icon" onClick={onDelete} title="Löschen">×</button>
+      </div>
+      {task.expanded && (
+        <div className="tm-expand">
+          <textarea className="note-inp" rows={2}
+            placeholder="Notiz, z.B. Warte auf Angebot KW 23"
+            value={task.note}
+            onChange={e => onPatch({note:e.target.value})}
+          />
+          {task.subtasks.length > 0 && (
+            <div className="subs">
+              {task.subtasks.map(s => (
+                <div className="sub-row" key={s.id}>
+                  <input type="checkbox" checked={s.done} onChange={e => onPatchSub(s.id,{done:e.target.checked})} />
+                  <span className={`sub-title${s.done?" done":""}`}>{s.title}</span>
+                  <button className="btn-icon" style={{fontSize:12}} onClick={() => onDelSub(s.id)}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="sub-actions">
+            <input className="add-task-inp" style={{fontSize:12,padding:"4px 8px"}} placeholder="Unterpunkt…"
+              value={newSub} onChange={e => setNewSub(e.target.value)}
+              onKeyDown={e => { if(e.key==="Enter"&&newSub.trim()){ onAddSub(newSub.trim()); setNewSub(""); }}}
+            />
+            <button className="btn-primary" style={{fontSize:11,padding:"4px 10px"}}
+              onClick={() => { if(newSub.trim()){ onAddSub(newSub.trim()); setNewSub(""); }}}>+ Sub</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectCard({ project, filterAss, filterSt, onUpdate, onDelete, onDragStart, onDragEnter, onDragEnd, isDragging, isDragOver }) {
+  const [addingTask, setAddingTask] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+
+  const patch = (tid, p) => onUpdate({ ...project, tasks: project.tasks.map(t => t.id===tid?{...t,...p}:t) });
+  const cycleSt  = (tid, cur) => { const i=STATUS_CYCLE.indexOf(cur);   patch(tid,{status:STATUS_CYCLE[(i+1)%STATUS_CYCLE.length]}); };
+  const cycleAss = (tid, cur) => { const i=ASSIGNEE_CYCLE.indexOf(cur); patch(tid,{assignee:ASSIGNEE_CYCLE[(i+1)%ASSIGNEE_CYCLE.length]}); };
+  const delTask  = tid => onUpdate({ ...project, tasks: project.tasks.filter(t => t.id!==tid) });
+  const addTask  = () => {
+    if (!newTitle.trim()) return;
+    onUpdate({ ...project, tasks:[...project.tasks, mkTask(newTitle.trim())] });
+    setNewTitle(""); setAddingTask(false);
+  };
+  const addSub   = (tid, title) => patch(tid,{subtasks:[...(project.tasks.find(t=>t.id===tid)?.subtasks||[]),{id:uid(),title,done:false}]});
+  const patchSub = (tid, sid, p) => patch(tid,{subtasks:project.tasks.find(t=>t.id===tid)?.subtasks.map(s=>s.id===sid?{...s,...p}:s)||[]});
+  const delSub   = (tid, sid) => patch(tid,{subtasks:project.tasks.find(t=>t.id===tid)?.subtasks.filter(s=>s.id!==sid)||[]});
+
+  const visible = project.tasks.filter(t =>
+    (filterAss==="Alle"||t.assignee===filterAss) &&
+    (filterSt==="Alle"||t.status===filterSt)
+  );
+
+  let cardClass = "tm-project";
+  if (isDragging)  cardClass += " dragging";
+  if (isDragOver)  cardClass += " drag-over";
+
+  return (
+    <div
+      className={cardClass}
+      draggable
+      onDragStart={onDragStart}
+      onDragEnter={onDragEnter}
+      onDragEnd={onDragEnd}
+      onDragOver={e => e.preventDefault()}
+    >
+      <div className="tm-proj-hd">
+        <span className="drag-handle" title="Verschieben">⠿</span>
+        <span className="tm-proj-name">{project.name}</span>
+        <span className="tm-proj-count">{project.tasks.length} Tasks</span>
+        <button className="btn-icon" onClick={() => setAddingTask(a=>!a)} title="Task hinzufügen">+</button>
+        <button className="btn-icon" onClick={onDelete} title="Projekt löschen">×</button>
+      </div>
+      {visible.map(task => (
+        <TaskRow key={task.id} task={task}
+          onPatch={p => patch(task.id,p)}
+          onDelete={() => delTask(task.id)}
+          onCycleSt={cur => cycleSt(task.id,cur)}
+          onCycleAss={cur => cycleAss(task.id,cur)}
+          onAddSub={title => addSub(task.id,title)}
+          onPatchSub={(sid,p) => patchSub(task.id,sid,p)}
+          onDelSub={sid => delSub(task.id,sid)}
+        />
+      ))}
+      {visible.length===0 && project.tasks.length>0 && (
+        <div style={{padding:"10px 16px",fontSize:12,color:"var(--muted)"}}>Keine Tasks für diesen Filter.</div>
+      )}
+      {addingTask && (
+        <div className="add-task-row">
+          <input className="add-task-inp" placeholder="Neue Aufgabe…" value={newTitle}
+            onChange={e=>setNewTitle(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter") addTask(); if(e.key==="Escape"){ setAddingTask(false); setNewTitle(""); }}}
+            autoFocus
+          />
+          <button className="btn-primary" onClick={addTask}>Hinzufügen</button>
+          <button className="btn-cancel" onClick={() => { setAddingTask(false); setNewTitle(""); }}>Abbrechen</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskManagerView({ projects, setProjects, saveProjects }) {
+  const [filterAss, setFilterAss] = useState("Alle");
+  const [filterSt,  setFilterSt]  = useState("Alle");
+  const [addingBV,  setAddingBV]  = useState(false);
+  const [newBVName, setNewBVName] = useState("");
+  const dragIdx   = useRef(null);
+  const dragOverIdx = useRef(null);
+  const [draggingId, setDraggingId]   = useState(null);
+  const [dragOverId, setDragOverId]   = useState(null);
+
+  const update = p => { setProjects(p); saveProjects(p); };
+
+  const addProject = () => {
+    if (!newBVName.trim()) return;
+    update([...projects, {id:uid(), name:newBVName.trim(), tasks:[]}]);
+    setNewBVName(""); setAddingBV(false);
+  };
+
+  const handleDragStart = (idx, id) => {
+    dragIdx.current = idx;
+    setDraggingId(id);
+  };
+  const handleDragEnter = (idx, id) => {
+    dragOverIdx.current = idx;
+    setDragOverId(id);
+  };
+  const handleDragEnd = () => {
+    const from = dragIdx.current;
+    const to   = dragOverIdx.current;
+    if (from !== null && to !== null && from !== to) {
+      const next = [...projects];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      update(next);
+    }
+    dragIdx.current = null;
+    dragOverIdx.current = null;
+    setDraggingId(null);
+    setDragOverId(null);
+  };
+
+  const openCount = projects.reduce((s,p) => s + p.tasks.filter(t=>t.status!=="erledigt").length, 0);
+  const waitCount = projects.reduce((s,p) => s + p.tasks.filter(t=>t.status==="wartend").length, 0);
+  const doneCount = projects.reduce((s,p) => s + p.tasks.filter(t=>t.status==="erledigt").length, 0);
+
+  return (
+    <div className="page" id="print-area">
+      <div className="print-header">Aufgabenliste – BV-Manager</div>
+      <div className="print-date">Erstellt: {new Date().toLocaleDateString("de-DE", {day:"2-digit",month:"2-digit",year:"numeric"})}</div>
+
+      <div className="summary">
+        <div className="sum-card"><div className="sum-val">{projects.length}</div><div className="sum-label">Projekte</div></div>
+        <div className="sum-card"><div className="sum-val" style={{color:"#64748b"}}>{openCount}</div><div className="sum-label">Offen</div></div>
+        <div className="sum-card"><div className="sum-val" style={{color:"#f59e0b"}}>{waitCount}</div><div className="sum-label">Wartend</div></div>
+        <div className="sum-card"><div className="sum-val" style={{color:"#4ade80"}}>{doneCount}</div><div className="sum-label">Erledigt</div></div>
+      </div>
+
+      <div className="filters">
+        <div className="filter-group">
+          <span>Zuständig:</span>
+          {["Alle","HP","DP","–"].map(a => (
+            <button key={a} className={`f-btn${filterAss===a?" active":""}`} onClick={() => setFilterAss(a)}>{a}</button>
+          ))}
+        </div>
+        <div className="filter-group">
+          <span>Status:</span>
+          {["Alle",...STATUS_CYCLE].map(s => (
+            <button key={s} className={`f-btn${filterSt===s?" active":""}`}
+              onClick={() => setFilterSt(s)}
+              style={filterSt===s&&s!=="Alle"?{background:STATUS_META[s]?.color,borderColor:STATUS_META[s]?.color,color:"#0d1117"}:{}}>
+              {s==="Alle"?"Alle":STATUS_META[s].label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {projects.length === 0 && <div className="empty">Noch keine Projekte. Füge das erste BV hinzu.</div>}
+
+      {projects.map((p, idx) => (
+        <ProjectCard key={p.id} project={p} filterAss={filterAss} filterSt={filterSt}
+          isDragging={draggingId===p.id}
+          isDragOver={dragOverId===p.id && draggingId!==p.id}
+          onDragStart={() => handleDragStart(idx, p.id)}
+          onDragEnter={() => handleDragEnter(idx, p.id)}
+          onDragEnd={handleDragEnd}
+          onUpdate={updated => update(projects.map(x => x.id===p.id?updated:x))}
+          onDelete={() => update(projects.filter(x => x.id!==p.id))}
+        />
+      ))}
+
+      {addingBV ? (
+        <div className="add-bv-row">
+          <input className="add-bv-inp" placeholder="Name des neuen BV…" value={newBVName}
+            onChange={e=>setNewBVName(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter") addProject(); if(e.key==="Escape"){ setAddingBV(false); setNewBVName(""); }}}
+            autoFocus
+          />
+          <button className="btn-primary" onClick={addProject}>Erstellen</button>
+          <button className="btn-cancel" onClick={() => { setAddingBV(false); setNewBVName(""); }}>Abbrechen</button>
+        </div>
+      ) : (
+        <button className="btn-primary" style={{marginTop:12}} onClick={() => setAddingBV(true)}>+ Neues BV</button>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PDF EXPORT (top-level, kein React-State)
+══════════════════════════════════════════════════════════════ */
+function exportPDF(projects) {
+  const btn = document.getElementById("pdf-btn");
+  if (btn) { btn.textContent = "Erstelle..."; btn.disabled = true; }
+
+  function doExport() {
+    try {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation:"portrait", unit:"mm", format:"a4" });
+      const pw = 180, ml = 15;
+      const SL = { offen:"Offen", "in-arbeit":"In Arbeit", wartend:"Wartend", erledigt:"Erledigt" };
+      const SC = { offen:[71,85,105], "in-arbeit":[146,64,14], wartend:[67,56,202], erledigt:[22,101,52] };
+      const SB = { offen:[241,245,249], "in-arbeit":[254,249,236], wartend:[243,242,255], erledigt:[240,255,246] };
+      const AC = { HP:[26,111,181], DP:[181,90,26] };
+      const date = new Date().toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"});
+      const tot = projects.reduce((s,p)=>s+p.tasks.length,0);
+
+      doc.setFillColor(15,23,42);
+      doc.roundedRect(ml,12,pw,12,2,2,"F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.setTextColor(255,255,255);
+      doc.text("BV-Aufgabenliste", ml+4, 20);
+      doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(148,163,184);
+      doc.text("Erstellt: "+date+"  |  "+projects.length+" Projekte  |  "+tot+" Aufgaben", ml+pw-4, 20, {align:"right"});
+
+      let y = 28;
+      const lh = 7;
+      const np = (n) => { if (y+n > 282) { doc.addPage(); y=15; } };
+
+      for (const p of projects) {
+        np(14);
+        doc.setFillColor(30,41,59); doc.rect(ml,y,pw,8,"F");
+        doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(255,255,255);
+        doc.text(p.name, ml+3, y+5.5);
+        doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(148,163,184);
+        doc.text(p.tasks.length+" Tasks", ml+pw-3, y+5.5, {align:"right"});
+        y+=8;
+
+        doc.setFillColor(248,250,252); doc.rect(ml,y,pw,6,"F");
+        doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.setTextColor(100,116,139);
+        doc.text("Aufgabe", ml+3, y+4);
+        doc.text("Status", ml+pw*0.72, y+4, {align:"center"});
+        doc.text("Wer", ml+pw*0.92, y+4, {align:"center"});
+        doc.setDrawColor(226,232,240); doc.setLineWidth(0.2);
+        doc.line(ml,y+6,ml+pw,y+6);
+        y+=6;
+
+        for (let i=0; i<p.tasks.length; i++) {
+          const t = p.tasks[i];
+          const sl = SL[t.status]||t.status;
+          const sbg = SB[t.status]||[241,245,249];
+          const sfg = SC[t.status]||[71,85,105];
+          const afg = AC[t.assignee]||[136,136,136];
+          const done = t.status==="erledigt";
+          const hn = !!(t.note&&t.note.trim());
+          const hs = !!(t.subtasks&&t.subtasks.length>0);
+          const rh = lh + (hn?4:0) + (hs?t.subtasks.length*4:0);
+          np(rh+1);
+          const rb = i%2===0?[248,250,252]:[255,255,255];
+          doc.setFillColor(...rb);  doc.rect(ml,y,pw*0.62,rh,"F");
+          doc.setFillColor(...sbg); doc.rect(ml+pw*0.62,y,pw*0.22,rh,"F");
+          doc.setFillColor(...rb);  doc.rect(ml+pw*0.84,y,pw*0.16,rh,"F");
+          doc.setFont("helvetica","normal"); doc.setFontSize(9);
+          doc.setTextColor(...(done?[180,180,180]:[34,34,34]));
+          doc.text(doc.splitTextToSize(t.title,pw*0.58)[0], ml+3, y+5);
+          if (hn) {
+            doc.setFont("helvetica","italic"); doc.setFontSize(7.5); doc.setTextColor(102,102,102);
+            doc.text(doc.splitTextToSize(t.note,pw*0.58)[0], ml+3, y+9);
+          }
+          if (hs) {
+            let sy=y+(hn?13:9);
+            t.subtasks.forEach(s=>{
+              doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(s.done?180:100);
+              doc.text((s.done?"v ":"- ")+s.title, ml+5, sy); sy+=4;
+            });
+          }
+          doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...sfg);
+          doc.text(sl, ml+pw*0.73, y+5, {align:"center"});
+          doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...afg);
+          doc.text(t.assignee, ml+pw*0.92, y+5, {align:"center"});
+          doc.setDrawColor(226,232,240); doc.setLineWidth(0.15);
+          doc.line(ml,y+rh,ml+pw,y+rh);
+          y+=rh;
+        }
+        y+=5;
+      }
+      const pages=doc.getNumberOfPages();
+      for(let i=1;i<=pages;i++){
+        doc.setPage(i);
+        doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(150,150,150);
+        doc.text("Seite "+i+" / "+pages, 195, 290, {align:"right"});
+      }
+      doc.save("BV-Aufgabenliste_"+date.replace(/\./g,"-")+".pdf");
+    } catch(e) {
+      alert("Fehler: "+e.message);
+    } finally {
+      if (btn) { btn.textContent = "PDF exportieren"; btn.disabled = false; }
+    }
+  }
+
+  if (window.jspdf) {
+    doExport();
+  } else {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = doExport;
+    s.onerror = () => { alert("jsPDF konnte nicht geladen werden."); if(btn){btn.textContent="PDF exportieren";btn.disabled=false;} };
+    document.head.appendChild(s);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ROOT APP
+══════════════════════════════════════════════════════════════ */
+function App() {
+  const [tab, setTab]           = useState("jourfix");
+  const [projects, setProjects] = useState([]);
+  const [jfState, setJfState]   = useState({ active:{}, done:{} });
+  const [activeBVs, setActiveBVs] = useState([]);
+  const [doneBVs,   setDoneBVs]   = useState([]);
+  const [loaded, setLoaded]     = useState(false);
+
+  useEffect(() => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap";
+    document.head.appendChild(link);
+    const el = document.createElement("style");
+    el.textContent = CSS;
+    document.head.appendChild(el);
+    return () => { document.head.removeChild(el); document.head.removeChild(link); };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const t = await window.storage.get(SK_TASKS);
+        setProjects(t?.value ? JSON.parse(t.value) : DEFAULT_TASKS);
+      } catch { setProjects(DEFAULT_TASKS); }
+
+      // BV-Listen laden oder Defaults verwenden (mit uid pro BV)
+      let aList = ACTIVE_BVS.map(b => ({...b, id: b.num}));
+      let dList = DONE_BVS.map(b => ({...b, id: b.num}));
+      try {
+        const bvs = await window.storage.get(SK_JF_BVS);
+        if (bvs?.value) { const p=JSON.parse(bvs.value); aList=p.active; dList=p.done; }
+      } catch {}
+      setActiveBVs(aList);
+      setDoneBVs(dList);
+
+      // JF-Checks laden
+      try {
+        const j = await window.storage.get(SK_JOURFIX);
+        if (j?.value) setJfState(JSON.parse(j.value));
+        else {
+          // Seed-Checks aus Default-Listen
+          const s = { active:{}, done:{} };
+          aList.forEach(b => { s.active[b.id]={};  JF_TOPICS_ACTIVE.forEach(t=>{ s.active[b.id][t.id]=false; }); });
+          dList.forEach(b => { s.done[b.id]={};    JF_TOPICS_DONE.forEach(t=>{   s.done[b.id][t.id]=false;   }); });
+          setJfState(s);
+        }
+      } catch {}
+
+      setLoaded(true);
+    })();
+  }, []);
+
+  const saveProjects = useCallback(data => {
+    window.storage.set(SK_TASKS, JSON.stringify(data)).catch(()=>{});
+  }, []);
+  const saveJF = useCallback(data => {
+    window.storage.set(SK_JOURFIX, JSON.stringify(data)).catch(()=>{});
+  }, []);
+  const saveBVs = useCallback((active, done) => {
+    window.storage.set(SK_JF_BVS, JSON.stringify({active, done})).catch(()=>{});
+  }, []);
+
+  const projectsRef = useRef(projects);
+  useEffect(() => { projectsRef.current = projects; }, [projects]);
+
+  if (!loaded) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"#7d8590",fontFamily:"sans-serif"}}>
+      Lade…
+    </div>
+  );
+
+  return (
+    <div>
+      <nav className="nav">
+        <button className={`nav-btn${tab==="jourfix"?" active":""}`} onClick={() => setTab("jourfix")}>
+          ✓ Jour Fix
+        </button>
+        <button className={`nav-btn${tab==="tasks"?" active":""}`} onClick={() => setTab("tasks")}>
+          ◈ Aufgaben
+        </button>
+        <div className="nav-spacer" />
+        {tab === "tasks" && (
+          <button id="pdf-btn" className="print-btn" onClick={() => exportPDF(projects)}>
+            PDF exportieren
+          </button>
+        )}
+      </nav>
+
+      {tab === "jourfix" ? (
+        <JourFixView
+          jfState={jfState} setJfState={setJfState} saveJF={saveJF}
+          activeBVs={activeBVs} setActiveBVs={setActiveBVs}
+          doneBVs={doneBVs}   setDoneBVs={setDoneBVs}
+          saveBVs={saveBVs}
+        />
+      ) : (
+        <TaskManagerView projects={projects} setProjects={setProjects} saveProjects={saveProjects} />
+      )}
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot || (ReactDOM.createRoot = (el) => ({ render: (c) => ReactDOM.render(c, el) }));
+</script>
+
+</body>
+</html>
