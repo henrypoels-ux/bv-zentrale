@@ -284,32 +284,396 @@ const mkTask = (title, assignee="–", status="offen") => ({
   id: uid(), title, assignee, status, note: "", expanded: false, subtasks: [],
 });
 const DEFAULT_TASKS = [
-  { id:uid(), name:"Bothe", tasks:[
-    mkTask("Lüfter → Tophoven"),
-    mkTask("Fuger → Sapsiz","DP"),
-    mkTask("Fenster → GW"),
-  ]},
-  { id:uid(), name:"Berg", tasks:[ mkTask("Terrassenbelag Rest","DP") ]},
-  { id:uid(), name:"Blümke", tasks:[ mkTask("Terrassenbelag Rest","DP") ]},
-  { id:uid(), name:"Frick", tasks:[ mkTask("Malerarbeiten TH + Federdeckel → Joel Kehrbusch","HP") ]},
-  { id:uid(), name:"Janssen", tasks:[ mkTask("Fensterbank ändern") ]},
-  { id:uid(), name:"Schuppan", tasks:[ mkTask("Rückmeldung abwarten offene Punkte","–","wartend") ]},
-  { id:uid(), name:"Hollender", tasks:[
-    mkTask("Rückmeldung Schlosser erwartet bzgl. Gelaender/Terrassenbelag","DP","wartend"),
-    mkTask("Lüftungsschlitze Fassade → Eldem anrufen","HP"),
-  ]},
-  { id:uid(), name:"Hanika", tasks:[ mkTask("Rückmeldung erwartet","HP","wartend") ]},
-  { id:uid(), name:"Müller Reinke", tasks:[
-    mkTask("Rückmeldung zu Eigenleistungen – Gewerke einplanen","DP","wartend"),
-  ]},
-  { id:uid(), name:"Bruns", tasks:[
-    mkTask("Installateur klären","DP"),
-    mkTask("Weitere Gewerke einplanen","DP"),
-    mkTask("Fenstereinbau KW 22 → Fensterbänke ALU","–","in-arbeit"),
-    mkTask("Fuger klären"),
-    mkTask("Angebot Riemchen Garage","HP"),
-  ]},
-  { id:uid(), name:"Hundorf", tasks:[ mkTask("Klinkerkolonne","HP") ]},
+  {
+    "name": "Allgemein",
+    "tasks": [
+      {
+        "title": "Signatur Betriebsferien",
+        "assignee": "–",
+        "status": "offen",
+        "id": "278ttfn",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Terminplan allgemein",
+        "assignee": "–",
+        "status": "offen",
+        "id": "fkedlkz",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Germes nachfragen für Redlin Brenner (Termin absprechen)",
+        "assignee": "–",
+        "status": "offen",
+        "id": "ow2xael",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Termine und Unterlagen für Kehrbusch zusammenstellen",
+        "assignee": "–",
+        "status": "offen",
+        "id": "0hdvp8c",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Meterriss Redlin und Brenner",
+        "assignee": "HP",
+        "status": "offen",
+        "id": "s0b3uzc",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "w1cxn18"
+  },
+  {
+    "name": "Kasseb",
+    "tasks": [
+      {
+        "title": "Sanitär / Heizung / Lüftung",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "6qdhtpf",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Innentüren + Reste Trockenbau",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "r2of2ml",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "NET Garage",
+        "assignee": "DP",
+        "status": "wartend",
+        "id": "6vlxk32",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Säule Stromkasten umstellen",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "h50g0qm",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Netzanschlüsse ab KW 27",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "8s0w6lf",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Geländer abklären (verzinkt oder grundiert (Maler in EL)) -> ggf. bei Jung anfragen",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "hiff36w",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Nach Hausanschlüsse Ekeltriker und Installatuer fertig",
+        "assignee": "–",
+        "status": "offen",
+        "id": "ki1f41z",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "sv6ncg9"
+  },
+  {
+    "name": "Bothe",
+    "tasks": [
+      {
+        "title": "Fliesenleger",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "n0065ar",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Versiegler",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "zx1fcxr",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Maler",
+        "assignee": "–",
+        "status": "offen",
+        "id": "01u15up",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "b6qx18f"
+  },
+  {
+    "name": "Berg",
+    "tasks": [
+      {
+        "title": "Lüfter -> Tophoven",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "cy9bfh3",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Fenster -> GW",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "8se11t0",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "ex7x1mn"
+  },
+  {
+    "name": "Blümke",
+    "tasks": [
+      {
+        "title": "Terrassenbelag Rest",
+        "assignee": "DP",
+        "status": "in-arbeit",
+        "id": "u1ilz34",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "awde0nw"
+  },
+  {
+    "name": "Frick",
+    "tasks": [
+      {
+        "title": "Malerarbeiten TH + Federdeckel → Joel Kehrbusch",
+        "assignee": "HP",
+        "status": "offen",
+        "id": "u3alrk3",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "di1hxrb"
+  },
+  {
+    "name": "Janssen",
+    "tasks": [
+      {
+        "title": "Fensterbank ändern",
+        "assignee": "–",
+        "status": "offen",
+        "id": "rfftxvn",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "ybkncyf"
+  },
+  {
+    "name": "Schuppan",
+    "tasks": [
+      {
+        "title": "Rückmeldung abwarten offene Punkte",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "y7zgphl",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Restzahlung",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "xw9bkc6",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "u1j2u8y"
+  },
+  {
+    "name": "Hollender",
+    "tasks": [
+      {
+        "title": "Rückmeldung Schlosser erwartet bzgl. Geländer/Terrassenbelag",
+        "assignee": "DP",
+        "status": "in-arbeit",
+        "id": "533cv1i",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Lüftungsschlitze Fassade → Eldem anrufen",
+        "assignee": "HP",
+        "status": "erledigt",
+        "id": "mg7trab",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "u0b96xo"
+  },
+  {
+    "name": "Hanika",
+    "tasks": [
+      {
+        "title": "Rückmeldung erwartet",
+        "assignee": "HP",
+        "status": "wartend",
+        "id": "womqkhp",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "y5g4p3p"
+  },
+  {
+    "name": "Müller Reinke",
+    "tasks": [
+      {
+        "title": "Rückmeldung zu Eigenleistungen – Gewerke einplanen",
+        "assignee": "DP",
+        "status": "erledigt",
+        "id": "8zp9kh4",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "w17jb1k"
+  },
+  {
+    "name": "Bruns",
+    "tasks": [
+      {
+        "title": "Installateur klären",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "9ur03lr",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Weitere Gewerke einplanen",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "5l0zkws",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Fenstereinbau KW 22 → Fensterbänke ALU",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "o2qvz37",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Fuger klären",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "bmrivsw",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Angebot Riemchen Garage",
+        "assignee": "HP",
+        "status": "erledigt",
+        "id": "qndim0m",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "iq54gn8"
+  },
+  {
+    "name": "Hundorf",
+    "tasks": [
+      {
+        "title": "Klinkerkolonne",
+        "assignee": "HP",
+        "status": "erledigt",
+        "id": "sj8120p",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Vergabe : Ausbau startet ca. in 8-10 WOchen (KW 34 oder 36 nach betriebsferien)",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "ww6rr26",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "hztrhmq"
+  },
+  {
+    "name": "Hirsch",
+    "tasks": [
+      {
+        "title": "Termin Decke (Lüftungsanlage)",
+        "assignee": "HP",
+        "status": "offen",
+        "id": "iy8yihi",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "8siavyw"
+  }
 ];
 
 /* ─── Default Jour-Fix State ─── */
@@ -487,12 +851,20 @@ function SrcTag({ src }) {
   return <span className="src-tag src-both">Capmo + Excel</span>;
 }
 
-function JFCard({ bv, topics, checks, onToggle, onReset, onDelete, isDone,
+const KIND_CYCLE = ["done", "active", "plan"];
+const KIND_META  = {
+  done:   { label: "Abgeschlossen", color: "#f87171", bg: "rgba(248,113,113,.15)" },
+  active: { label: "Laufend",       color: "#4ade80", bg: "rgba(74,222,128,.15)"  },
+  plan:   { label: "Vorplanung",    color: "#f59e0b", bg: "rgba(245,158,11,.15)"  },
+};
+
+function JFCard({ bv, topics, checks, onToggle, onReset, onDelete, kind, onChangeKind,
                   onDragStart, onDragEnter, onDragEnd, isDragging, isDragOver }) {
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const checked = topics.filter(t => checks[t.id]).length;
   const pct = Math.round(checked / topics.length * 100);
+  const km = KIND_META[kind];
   let cls = "jf-card";
   if (isDragging) cls += " dragging";
   if (isDragOver) cls += " drag-over";
@@ -504,7 +876,12 @@ function JFCard({ bv, topics, checks, onToggle, onReset, onDelete, isDone,
         <span className="drag-handle" title="Verschieben" onClick={e => e.stopPropagation()}>⠿</span>
         <span className="jf-num">{bv.num}</span>
         <span className="jf-title">{bv.name}</span>
-        {isDone && <span className="badge-done">Abgeschlossen</span>}
+        <button
+          onClick={e => { e.stopPropagation(); onChangeKind(); }}
+          style={{fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:4, border:`1px solid ${km.color}55`,
+                  background:km.bg, color:km.color, cursor:"pointer", whiteSpace:"nowrap", flexShrink:0}}>
+          {km.label} ▸
+        </button>
         <div className="jf-prog">
           <div className="jf-bar"><div className="jf-fill" style={{width:`${pct}%`}} /></div>
           <span className="jf-pct">{checked}/{topics.length}</span>
@@ -548,57 +925,79 @@ function JourFixView({ jfState, setJfState, saveJF, activeBVs, setActiveBVs, pla
   const dragOver = useRef(null);
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
-
-  const [addingKind, setAddingKind] = useState(null); // "active"|"plan"|"done"
+  const [collapsed, setCollapsed] = useState({ done: false, active: false, plan: false });
+  const [addingKind, setAddingKind] = useState(null);
   const [newNum,  setNewNum]  = useState("");
   const [newName, setNewName] = useState("");
 
-  /* ── Helpers ── */
   const topicsFor = (kind) => kind==="active" ? JF_TOPICS_ACTIVE : kind==="plan" ? JF_TOPICS_PLAN : JF_TOPICS_DONE;
   const listFor   = (kind) => kind==="active" ? activeBVs : kind==="plan" ? planBVs : doneBVs;
-  const setListFor= (kind) => kind==="active" ? setActiveBVs : kind==="plan" ? setPlanBVs : setDoneBVs;
-
-  const saveAll = (a, p, d) => saveBVs(a, p, d);
+  const setListFor= (kind, v) => { if(kind==="active") setActiveBVs(v); else if(kind==="plan") setPlanBVs(v); else setDoneBVs(v); };
+  const saveAll   = (a,p,d) => saveBVs(a,p,d);
 
   const toggle = (kind, bvId, tid, val) => {
     const next = { ...jfState, [kind]: { ...jfState[kind], [bvId]: { ...(jfState[kind][bvId]||{}), [tid]: val } } };
     setJfState(next); saveJF(next);
   };
-  const reset = (kind, bvId, topics) => {
-    const cleared = {}; topics.forEach(t => { cleared[t.id] = false; });
+  const reset = (kind, bvId) => {
+    const cleared = {}; topicsFor(kind).forEach(t => { cleared[t.id] = false; });
     const next = { ...jfState, [kind]: { ...jfState[kind], [bvId]: cleared } };
     setJfState(next); saveJF(next);
   };
   const deleteBV = (kind, bvId) => {
     const next = { ...jfState }; delete next[kind][bvId];
     setJfState(next); saveJF(next);
-    const upd = listFor(kind).filter(b=>b.id!==bvId);
-    setListFor(kind)(upd);
-    const a = kind==="active"?upd:activeBVs, p = kind==="plan"?upd:planBVs, d = kind==="done"?upd:doneBVs;
+    const upd = listFor(kind).filter(b=>b.id!==bvId); setListFor(kind, upd);
+    const a=kind==="active"?upd:activeBVs, p=kind==="plan"?upd:planBVs, d=kind==="done"?upd:doneBVs;
     saveAll(a,p,d);
   };
+
+  /* ── Kategorie wechseln ── */
+  const changeKind = (bvId, fromKind) => {
+    const nextKind = KIND_CYCLE[(KIND_CYCLE.indexOf(fromKind)+1) % KIND_CYCLE.length];
+    const bv = listFor(fromKind).find(b=>b.id===bvId);
+    if (!bv) return;
+
+    // Aus alter Liste entfernen, Checks löschen
+    const oldList = listFor(fromKind).filter(b=>b.id!==bvId);
+    setListFor(fromKind, oldList);
+    const jfNext = { ...jfState };
+    delete jfNext[fromKind][bvId];
+
+    // In neue Liste einfügen, neue Checks anlegen
+    const newChecks = {}; topicsFor(nextKind).forEach(t => { newChecks[t.id]=false; });
+    jfNext[nextKind] = { ...jfNext[nextKind], [bvId]: newChecks };
+    const newList = [...listFor(nextKind), bv];
+    setListFor(nextKind, newList);
+
+    setJfState(jfNext); saveJF(jfNext);
+    const a = fromKind==="active"?oldList : nextKind==="active"?newList : activeBVs;
+    const p = fromKind==="plan"  ?oldList : nextKind==="plan"  ?newList : planBVs;
+    const d = fromKind==="done"  ?oldList : nextKind==="done"  ?newList : doneBVs;
+    saveAll(a,p,d);
+  };
+
   const addBV = (kind) => {
     if (!newName.trim()) return;
     const bv = { id: uid(), num: newNum.trim()||"–", name: newName.trim() };
-    const topics = topicsFor(kind);
-    const checks = {}; topics.forEach(t => { checks[t.id]=false; });
+    const checks = {}; topicsFor(kind).forEach(t => { checks[t.id]=false; });
     const nextJF = { ...jfState, [kind]: { ...jfState[kind], [bv.id]: checks } };
     setJfState(nextJF); saveJF(nextJF);
-    const upd = [...listFor(kind), bv]; setListFor(kind)(upd);
-    const a = kind==="active"?upd:activeBVs, p = kind==="plan"?upd:planBVs, d = kind==="done"?upd:doneBVs;
+    const upd = [...listFor(kind), bv]; setListFor(kind, upd);
+    const a=kind==="active"?upd:activeBVs, p=kind==="plan"?upd:planBVs, d=kind==="done"?upd:doneBVs;
     saveAll(a,p,d);
     setNewNum(""); setNewName(""); setAddingKind(null);
   };
 
-  /* ── Drag ── */
+  /* ── Drag (innerhalb einer Sektion) ── */
   const mkDrag = (kind) => ({
     start: (idx,id) => { dragIdx.current=idx; setDraggingId(id); },
     enter: (idx,id) => { dragOver.current=idx; setDragOverId(id); },
-    end:   () => {
+    end: () => {
       const from=dragIdx.current, to=dragOver.current;
       if (from!==null && to!==null && from!==to) {
         const next=[...listFor(kind)]; const [m]=next.splice(from,1); next.splice(to,0,m);
-        setListFor(kind)(next);
+        setListFor(kind, next);
         const a=kind==="active"?next:activeBVs, p=kind==="plan"?next:planBVs, d=kind==="done"?next:doneBVs;
         saveAll(a,p,d);
       }
@@ -606,49 +1005,75 @@ function JourFixView({ jfState, setJfState, saveJF, activeBVs, setActiveBVs, pla
     }
   });
 
-  /* ── Summary ── */
-  const countDone = (kind, list, topics) => list.filter(bv => topics.every(t => jfState[kind]?.[bv.id]?.[t.id])).length;
-  const countChecked = (kind, list, topics) => list.reduce((s,bv)=>s+topics.filter(t=>jfState[kind]?.[bv.id]?.[t.id]).length,0);
   const totalAll = activeBVs.length*JF_TOPICS_ACTIVE.length + planBVs.length*JF_TOPICS_PLAN.length + doneBVs.length*JF_TOPICS_DONE.length;
-  const totalChecked = countChecked("active",activeBVs,JF_TOPICS_ACTIVE) + countChecked("plan",planBVs,JF_TOPICS_PLAN) + countChecked("done",doneBVs,JF_TOPICS_DONE);
+  const totalChecked = ["active","plan","done"].reduce((s,k) =>
+    s + listFor(k).reduce((s2,bv) => s2 + topicsFor(k).filter(t=>jfState[k]?.[bv.id]?.[t.id]).length, 0), 0);
 
-  const renderSection = (kind, list, topics, label, color, badge) => {
+  const renderSection = (kind) => {
+    const list = listFor(kind);
+    const topics = topicsFor(kind);
+    const km = KIND_META[kind];
     const drag = mkDrag(kind);
+    const doneCount = list.filter(bv => topics.every(t => jfState[kind]?.[bv.id]?.[t.id])).length;
+    const isCollapsed = collapsed[kind];
+
     return (
-      <div key={kind}>
-        <div className="section-hd" style={{marginTop: kind==="active"?0:28, display:"flex", alignItems:"center", gap:8}}>
-          <span style={{color}}>{label}</span>
-          <span style={{fontSize:10, background: color+"22", color, border:`1px solid ${color}44`, borderRadius:4, padding:"1px 7px", fontWeight:600}}>
-            {countDone(kind,list,topics)}/{list.length} abgehakt
+      <div key={kind} style={{marginTop: kind==="done" ? 0 : 24}}>
+        {/* Sektion-Header */}
+        <div
+          onClick={() => setCollapsed(c => ({...c, [kind]: !c[kind]}))}
+          style={{display:"flex", alignItems:"center", gap:8, cursor:"pointer",
+                  padding:"8px 12px", borderRadius:"var(--radius-lg)",
+                  background:"var(--surface)", border:"1px solid var(--border)",
+                  marginBottom: isCollapsed ? 0 : 10, userSelect:"none"}}>
+          <span style={{fontSize:16, color:km.color, transition:"transform .2s",
+                        display:"inline-block", transform: isCollapsed?"rotate(-90deg)":"rotate(0deg)"}}>▾</span>
+          <span style={{fontSize:13, fontWeight:600, color:km.color, flex:1}}>{km.label}</span>
+          <span style={{fontSize:11, color:"var(--muted)", fontFamily:"var(--mono)"}}>
+            {list.length} BV · {doneCount}/{list.length} abgehakt
           </span>
         </div>
-        {list.map((bv,i) => (
-          <JFCard key={bv.id} bv={bv} topics={topics}
-            checks={jfState[kind]?.[bv.id] || {}}
-            onToggle={(tid,val) => toggle(kind, bv.id, tid, val)}
-            onReset={() => reset(kind, bv.id, topics)}
-            onDelete={() => deleteBV(kind, bv.id)}
-            isDone={kind==="done"}
-            isDragging={draggingId===bv.id}
-            isDragOver={dragOverId===bv.id && draggingId!==bv.id}
-            onDragStart={() => drag.start(i, bv.id)}
-            onDragEnter={() => drag.enter(i, bv.id)}
-            onDragEnd={drag.end}
-          />
-        ))}
-        {list.length===0 && <div className="empty" style={{padding:"16px",fontSize:12}}>Noch keine BV in dieser Kategorie.</div>}
-        {addingKind===kind ? (
-          <div className="add-bv-row">
-            <input className="add-bv-inp" style={{maxWidth:80}} placeholder="Nr." value={newNum} onChange={e=>setNewNum(e.target.value)} />
-            <input className="add-bv-inp" placeholder="BV Name…" value={newName}
-              onChange={e=>setNewName(e.target.value)}
-              onKeyDown={e=>{ if(e.key==="Enter") addBV(kind); if(e.key==="Escape"){ setAddingKind(null); setNewNum(""); setNewName(""); }}}
-              autoFocus />
-            <button className="btn-primary" onClick={()=>addBV(kind)}>Hinzufügen</button>
-            <button className="btn-cancel" onClick={()=>{ setAddingKind(null); setNewNum(""); setNewName(""); }}>Abbrechen</button>
-          </div>
-        ) : (
-          <button className="btn-primary" style={{marginTop:8, background:"none", border:`1px solid ${color}66`, color}} onClick={()=>setAddingKind(kind)}>+ BV hinzufügen</button>
+
+        {!isCollapsed && (
+          <>
+            {list.map((bv,i) => (
+              <JFCard key={bv.id} bv={bv} topics={topics} kind={kind}
+                checks={jfState[kind]?.[bv.id] || {}}
+                onToggle={(tid,val) => toggle(kind, bv.id, tid, val)}
+                onReset={() => reset(kind, bv.id)}
+                onDelete={() => deleteBV(kind, bv.id)}
+                onChangeKind={() => changeKind(bv.id, kind)}
+                isDragging={draggingId===bv.id}
+                isDragOver={dragOverId===bv.id && draggingId!==bv.id}
+                onDragStart={() => drag.start(i, bv.id)}
+                onDragEnter={() => drag.enter(i, bv.id)}
+                onDragEnd={drag.end}
+              />
+            ))}
+            {list.length===0 && (
+              <div style={{padding:"14px 16px", fontSize:12, color:"var(--muted)",
+                           background:"var(--surface)", border:"1px solid var(--border)",
+                           borderRadius:"var(--radius-lg)", marginBottom:8}}>
+                Keine BV in dieser Kategorie.
+              </div>
+            )}
+            {addingKind===kind ? (
+              <div className="add-bv-row">
+                <input className="add-bv-inp" style={{maxWidth:80}} placeholder="Nr." value={newNum} onChange={e=>setNewNum(e.target.value)} />
+                <input className="add-bv-inp" placeholder="BV Name…" value={newName}
+                  onChange={e=>setNewName(e.target.value)}
+                  onKeyDown={e=>{ if(e.key==="Enter") addBV(kind); if(e.key==="Escape"){ setAddingKind(null); setNewNum(""); setNewName(""); }}}
+                  autoFocus />
+                <button className="btn-primary" onClick={()=>addBV(kind)}>Hinzufügen</button>
+                <button className="btn-cancel" onClick={()=>{ setAddingKind(null); setNewNum(""); setNewName(""); }}>Abbrechen</button>
+              </div>
+            ) : (
+              <button style={{marginTop:4, background:"none", border:`1px solid ${km.color}44`,
+                              color:km.color, fontFamily:"var(--font)", fontSize:12, fontWeight:600,
+                              padding:"5px 14px", borderRadius:"var(--radius)", cursor:"pointer"}}
+                onClick={()=>setAddingKind(kind)}>+ BV hinzufügen</button>
+            )}
+          </>
         )}
       </div>
     );
@@ -662,10 +1087,9 @@ function JourFixView({ jfState, setJfState, saveJF, activeBVs, setActiveBVs, pla
         <div className="sum-card"><div className="sum-val" style={{color:"#f59e0b"}}>{planBVs.length}</div><div className="sum-label">Vorplanung</div></div>
         <div className="sum-card"><div className="sum-val">{totalChecked}/{totalAll}</div><div className="sum-label">Punkte gesamt</div></div>
       </div>
-
-      {renderSection("done",   doneBVs,   JF_TOPICS_DONE,   "▸ Abgeschlossen – Offene Mängel", "#f87171", true)}
-      {renderSection("active", activeBVs, JF_TOPICS_ACTIVE, "▸ Laufende Bauvorhaben",          "#4ade80", false)}
-      {renderSection("plan",   planBVs,   JF_TOPICS_PLAN,   "▸ Vorplanung",                    "#f59e0b", false)}
+      {renderSection("done")}
+      {renderSection("active")}
+      {renderSection("plan")}
     </div>
   );
 }
