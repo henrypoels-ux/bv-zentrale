@@ -273,32 +273,396 @@ const mkTask = (title, assignee="–", status="offen") => ({
   id: uid(), title, assignee, status, note: "", expanded: false, subtasks: [],
 });
 const DEFAULT_TASKS = [
-  { id:uid(), name:"Bothe", tasks:[
-    mkTask("Lüfter → Tophoven"),
-    mkTask("Fuger → Sapsiz","DP"),
-    mkTask("Fenster → GW"),
-  ]},
-  { id:uid(), name:"Berg", tasks:[ mkTask("Terrassenbelag Rest","DP") ]},
-  { id:uid(), name:"Blümke", tasks:[ mkTask("Terrassenbelag Rest","DP") ]},
-  { id:uid(), name:"Frick", tasks:[ mkTask("Malerarbeiten TH + Federdeckel → Joel Kehrbusch","HP") ]},
-  { id:uid(), name:"Janssen", tasks:[ mkTask("Fensterbank ändern") ]},
-  { id:uid(), name:"Schuppan", tasks:[ mkTask("Rückmeldung abwarten offene Punkte","–","wartend") ]},
-  { id:uid(), name:"Hollender", tasks:[
-    mkTask("Rückmeldung Schlosser erwartet bzgl. Gelaender/Terrassenbelag","DP","wartend"),
-    mkTask("Lüftungsschlitze Fassade → Eldem anrufen","HP"),
-  ]},
-  { id:uid(), name:"Hanika", tasks:[ mkTask("Rückmeldung erwartet","HP","wartend") ]},
-  { id:uid(), name:"Müller Reinke", tasks:[
-    mkTask("Rückmeldung zu Eigenleistungen – Gewerke einplanen","DP","wartend"),
-  ]},
-  { id:uid(), name:"Bruns", tasks:[
-    mkTask("Installateur klären","DP"),
-    mkTask("Weitere Gewerke einplanen","DP"),
-    mkTask("Fenstereinbau KW 22 → Fensterbänke ALU","–","in-arbeit"),
-    mkTask("Fuger klären"),
-    mkTask("Angebot Riemchen Garage","HP"),
-  ]},
-  { id:uid(), name:"Hundorf", tasks:[ mkTask("Klinkerkolonne","HP") ]},
+  {
+    "name": "Allgemein",
+    "tasks": [
+      {
+        "title": "Signatur Betriebsferien",
+        "assignee": "–",
+        "status": "offen",
+        "id": "8zzlec5",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Terminplan allgemein",
+        "assignee": "–",
+        "status": "offen",
+        "id": "6acirn7",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Germes nachfragen für Redlin Brenner (Termin absprechen)",
+        "assignee": "–",
+        "status": "offen",
+        "id": "c6vnjcm",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Termine und Unterlagen für Kehrbusch zusammenstellen",
+        "assignee": "–",
+        "status": "offen",
+        "id": "czqg2zg",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Meterriss Redlin und Brenner",
+        "assignee": "HP",
+        "status": "offen",
+        "id": "s95e49a",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "w5nsy2y"
+  },
+  {
+    "name": "Kasseb",
+    "tasks": [
+      {
+        "title": "Sanitär / Heizung / Lüftung",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "3mc1e84",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Innentüren + Reste Trockenbau",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "1hkqz6d",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "NET Garage",
+        "assignee": "DP",
+        "status": "wartend",
+        "id": "lcttglu",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Säule Stromkasten umstellen",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "t7d51wd",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Netzanschlüsse ab KW 27",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "qx65b0w",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Geländer abklären (verzinkt oder grundiert (Maler in EL)) -> ggf. bei Jung anfragen",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "48xovwu",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Nach Hausanschlüsse Ekeltriker und Installatuer fertig",
+        "assignee": "–",
+        "status": "offen",
+        "id": "i4ljg0l",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "7evevao"
+  },
+  {
+    "name": "Bothe",
+    "tasks": [
+      {
+        "title": "Fliesenleger",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "3yjtgee",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Versiegler",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "u6mrg54",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Maler",
+        "assignee": "–",
+        "status": "offen",
+        "id": "v3crxhg",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "cztoy0e"
+  },
+  {
+    "name": "Berg",
+    "tasks": [
+      {
+        "title": "Lüfter -> Tophoven",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "qifb4kx",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Fenster -> GW",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "zdnwpg8",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "mpx870z"
+  },
+  {
+    "name": "Blümke",
+    "tasks": [
+      {
+        "title": "Terrassenbelag Rest",
+        "assignee": "DP",
+        "status": "in-arbeit",
+        "id": "h40muuj",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "nywl8q4"
+  },
+  {
+    "name": "Frick",
+    "tasks": [
+      {
+        "title": "Malerarbeiten TH + Federdeckel → Joel Kehrbusch",
+        "assignee": "HP",
+        "status": "offen",
+        "id": "ojenkj8",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "usq86n1"
+  },
+  {
+    "name": "Janssen",
+    "tasks": [
+      {
+        "title": "Fensterbank ändern",
+        "assignee": "–",
+        "status": "offen",
+        "id": "knd8iwq",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "xbedfq8"
+  },
+  {
+    "name": "Schuppan",
+    "tasks": [
+      {
+        "title": "Rückmeldung abwarten offene Punkte",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "2u82lo2",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Restzahlung",
+        "assignee": "–",
+        "status": "wartend",
+        "id": "i4kb45b",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "pgbhgsn"
+  },
+  {
+    "name": "Hollender",
+    "tasks": [
+      {
+        "title": "Rückmeldung Schlosser erwartet bzgl. Geländer/Terrassenbelag",
+        "assignee": "DP",
+        "status": "in-arbeit",
+        "id": "mput56r",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Lüftungsschlitze Fassade → Eldem anrufen",
+        "assignee": "HP",
+        "status": "erledigt",
+        "id": "vwkd4ly",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "dklgjic"
+  },
+  {
+    "name": "Hanika",
+    "tasks": [
+      {
+        "title": "Rückmeldung erwartet",
+        "assignee": "HP",
+        "status": "wartend",
+        "id": "g5bru3d",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "fps7sxq"
+  },
+  {
+    "name": "Müller Reinke",
+    "tasks": [
+      {
+        "title": "Rückmeldung zu Eigenleistungen – Gewerke einplanen",
+        "assignee": "DP",
+        "status": "erledigt",
+        "id": "zmnucw5",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "i6ehnbc"
+  },
+  {
+    "name": "Bruns",
+    "tasks": [
+      {
+        "title": "Installateur klären",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "mi4gfw4",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Weitere Gewerke einplanen",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "9qvffs1",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Fenstereinbau KW 22 → Fensterbänke ALU",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "upkffzl",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Fuger klären",
+        "assignee": "–",
+        "status": "erledigt",
+        "id": "c7fml6q",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Angebot Riemchen Garage",
+        "assignee": "HP",
+        "status": "erledigt",
+        "id": "vkhawmm",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "6hnw7e1"
+  },
+  {
+    "name": "Hundorf",
+    "tasks": [
+      {
+        "title": "Klinkerkolonne",
+        "assignee": "HP",
+        "status": "erledigt",
+        "id": "ahi1ueo",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      },
+      {
+        "title": "Vergabe : Ausbau startet ca. in 8-10 WOchen (KW 34 oder 36 nach betriebsferien)",
+        "assignee": "DP",
+        "status": "offen",
+        "id": "c4s23ky",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "vzr3941"
+  },
+  {
+    "name": "Hirsch",
+    "tasks": [
+      {
+        "title": "Termin Decke (Lüftungsanlage)",
+        "assignee": "HP",
+        "status": "offen",
+        "id": "2rvhj76",
+        "note": "",
+        "expanded": false,
+        "subtasks": []
+      }
+    ],
+    "id": "lo6zal4"
+  }
 ];
 
 /* ─── Default Jour-Fix State ─── */
