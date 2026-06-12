@@ -7,20 +7,8 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <style>
 body { margin: 0; background: #0d1117; }
-#auth-screen {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  min-height: 100vh; background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', sans-serif;
-}
-#auth-screen h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
-#auth-screen p  { font-size: 14px; color: #7d8590; margin-bottom: 32px; }
-#login-btn {
-  background: #58a6ff; border: none; color: #0d1117; font-size: 15px; font-weight: 600;
-  padding: 12px 28px; border-radius: 8px; cursor: pointer;
-}
-#login-btn:hover { opacity: 0.88; }
 #sync-status {
   position: fixed; bottom: 16px; right: 16px; font-size: 11px; color: #7d8590;
   background: #161b22; border: 1px solid rgba(255,255,255,.08); border-radius: 6px;
@@ -29,1136 +17,729 @@ body { margin: 0; background: #0d1117; }
 </style>
 </head>
 <body>
-
-<div id="auth-screen">
-  <h1>BV-Zentrale</h1>
-  <p>Melde dich mit deinem Poels Massivbau Konto an</p>
-  <button id="login-btn" onclick="doLogin()">Mit Microsoft anmelden</button>
-</div>
-
-<div id="root" style="display:none"></div>
+<div id="version-badge" style="position:fixed;bottom:10px;left:14px;font-size:12px;color:#58a6ff;font-family:monospace;pointer-events:none;z-index:999999;background:rgba(13,17,23,.8);padding:3px 10px;border-radius:4px;border:1px solid rgba(88,166,255,.3);">v2.1.0-preview</div>
+<div id="root"></div>
 <div id="sync-status"></div>
 
 <script>
-// ── MSAL Konfiguration ──────────────────────────────────────────
-const msalConfig = {
-  auth: {
-    clientId: "a4673733-968a-44f7-bb8d-31d9cc497f28",
-    authority: "https://login.microsoftonline.com/0b826b9f-bc18-4efb-af3d-8f92ea282f7b",
-    redirectUri: "https://henrypoels-ux.github.io/bv-zentrale/BV-Zentrale.html", //redirectUri: window.location.href.split('?')[0],
-  },
-  cache: { cacheLocation: "localStorage" }
-};
-const msalInstance = new msal.PublicClientApplication(msalConfig);
-const SCOPES = ["Files.ReadWrite", "User.Read"];
-
-// OneDrive Pfad – Datei liegt in _Projekte/BV-Zentrale/
-const DRIVE_FOLDER = "_Projekte/BV-Zentrale";
-const DATA_FILE    = "bv-zentrale-data.json";
-
-let accessToken = null;
-let saveTimer   = null;
-let cachedItemId = null;
-
+let _stTimer = null;
 function setStatus(msg) {
   const el = document.getElementById("sync-status");
   if (el) el.textContent = msg;
 }
-
-async function getToken() {
-  const accounts = msalInstance.getAllAccounts();
-  if (!accounts.length) return null;
-  try {
-    const res = await msalInstance.acquireTokenSilent({ scopes: SCOPES, account: accounts[0] });
-    return res.accessToken;
-  } catch {
-    // Fallback: redirect (funktioniert auf iOS)
-    await msalInstance.acquireTokenRedirect({ scopes: SCOPES });
-    return null;
-  }
-}
-
-async function doLogin() {
-  try {
-    await msalInstance.loginRedirect({ scopes: SCOPES });
-    // Seite wird weitergeleitet - handleRedirectPromise übernimmt
-  } catch(e) {
-    alert("Anmeldung fehlgeschlagen: " + e.message);
-  }
-}
-
-// ── OneDrive JSON lesen/schreiben ────────────────────────────────
-async function odRead() {
-  const tok = await getToken();
-  // Erst Item-ID suchen (gecacht für Performance)
-  if (!cachedItemId) {
-    const r = await fetch(
-      `https://graph.microsoft.com/v1.0/me/drive/root:/${DRIVE_FOLDER}/${DATA_FILE}`,
-      { headers: { Authorization: "Bearer " + tok } }
-    );
-    if (!r.ok) return null; // Datei existiert noch nicht
-    const meta = await r.json();
-    cachedItemId = meta.id;
-  }
-  const r2 = await fetch(
-    `https://graph.microsoft.com/v1.0/me/drive/items/${cachedItemId}/content`,
-    { headers: { Authorization: "Bearer " + tok } }
-  );
-  if (!r2.ok) return null;
-  return await r2.json();
-}
-
-async function odWrite(data) {
-  const tok = await getToken();
-  const json = JSON.stringify(data);
-  // PUT erstellt oder überschreibt die Datei
-  const r = await fetch(
-    `https://graph.microsoft.com/v1.0/me/drive/root:/${DRIVE_FOLDER}/${DATA_FILE}:/content`,
-    {
-      method: "PUT",
-      headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" },
-      body: json
-    }
-  );
-  if (!r.ok) throw new Error("Speichern fehlgeschlagen: " + r.status);
-  const meta = await r.json();
-  cachedItemId = meta.id;
-}
-
-// ── window.storage Shim (kompatibel mit der App) ─────────────────
-// Alle Daten in einem einzigen JSON-Objekt auf OneDrive
-let _memCache = null;
-
 window.storage = {
-  async get(key) {
-    if (!_memCache) {
-      setStatus("Lade Daten...");
-      try { _memCache = (await odRead()) || {}; } catch { _memCache = {}; }
-      setStatus("");
-    }
-    const val = _memCache[key];
-    return val !== undefined ? { key, value: typeof val === "string" ? val : JSON.stringify(val) } : null;
+  get(key) {
+    try { const v = localStorage.getItem(key); return Promise.resolve(v !== null ? {key,value:v} : null); }
+    catch { return Promise.resolve(null); }
   },
-  async set(key, value) {
-    if (!_memCache) _memCache = {};
-    _memCache[key] = value;
-    // Debounced save – schreibt maximal alle 2s
-    clearTimeout(saveTimer);
-    setStatus("Speichern...");
-    saveTimer = setTimeout(async () => {
-      try {
-        await odWrite(_memCache);
-        setStatus("Gespeichert ✓");
-        setTimeout(() => setStatus(""), 2000);
-      } catch(e) {
-        setStatus("Fehler beim Speichern!");
-        console.error(e);
-      }
-    }, 2000);
-    return { key, value };
+  set(key, value) {
+    try {
+      const s = typeof value === 'string' ? value : JSON.stringify(value);
+      localStorage.setItem(key, s);
+      clearTimeout(_stTimer); setStatus("Gespeichert ✓");
+      _stTimer = setTimeout(()=>setStatus(""), 1500);
+      return Promise.resolve({key,value:s});
+    } catch(e) { setStatus("Fehler!"); return Promise.reject(e); }
   },
-  async delete(key) {
-    if (_memCache) delete _memCache[key];
-    return { key, deleted: true };
-  }
+  delete(key) { try{localStorage.removeItem(key);}catch{} return Promise.resolve({key,deleted:true}); }
 };
-
-// ── App starten ──────────────────────────────────────────────────
-async function startApp() {
-  document.getElementById("auth-screen").style.display = "none";
-  document.getElementById("root").style.display = "block";
-
-  // Ordner anlegen falls nicht vorhanden (silent)
-  try {
-    const tok = await getToken();
-    await fetch(
-      "https://graph.microsoft.com/v1.0/me/drive/root:/_Projekte:/children",
-      {
-        method: "POST",
-        headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "BV-Zentrale", folder: {}, "@microsoft.graph.conflictBehavior": "ignore" })
-      }
-    );
-  } catch {}
-
-  ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
-}
-
-// Prüfen ob schon eingeloggt (nach Redirect)
-msalInstance.handleRedirectPromise().then(async (res) => {
-  if (res) { accessToken = res.accessToken; startApp(); return; }
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) { startApp(); return; }
-  // Noch nicht eingeloggt - Login-Screen zeigen (nichts tun)
-}).catch(e => {
-  console.error("Redirect error:", e);
-});
 </script>
 
 <script type="text/babel">
-const { useState, useEffect, useCallback, useRef } = React;
-
-
-
-const uid = () => Math.random().toString(36).slice(2, 9);
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+const uid = () => Math.random().toString(36).slice(2,9);
 
 /* ─── Storage Keys ─── */
 const SK_TASKS   = "bv-mgr-v3";
-const SK_JOURFIX = "bv-jourfix-v1";
-const SK_JF_BVS  = "bv-jourfix-bvs-v2";
-
-/* ─── Status / Assignee ─── */
-const STATUS_CYCLE   = ["offen", "in-arbeit", "wartend", "erledigt"];
-const ASSIGNEE_CYCLE = ["–", "HP", "DP"];
-const STATUS_META = {
-  offen:      { label: "Offen",     color: "#64748b", bg: "rgba(100,116,139,.18)", border: "rgba(100,116,139,.35)" },
-  "in-arbeit":{ label: "In Arbeit", color: "#f59e0b", bg: "rgba(245,158,11,.18)",  border: "rgba(245,158,11,.35)"  },
-  wartend:    { label: "Wartend",   color: "#818cf8", bg: "rgba(129,140,248,.18)", border: "rgba(129,140,248,.35)" },
-  erledigt:   { label: "Erledigt",  color: "#4ade80", bg: "rgba(74,222,128,.18)",  border: "rgba(74,222,128,.35)"  },
-};
-
-/* ─── Jour-Fix Topics ─── */
-const JF_TOPICS_ACTIVE = [
-  { id: "vergabe",     label: "Stand der Vergabe",               hint: "Excel – Auftragstabelle",  src: "excel" },
-  { id: "bautenstand", label: "Aktueller Bautenstand",           hint: "Capmo – Bautagebuch",      src: "capmo" },
-  { id: "terminplan",  label: "Terminplan",                      hint: "Capmo – Bauzeitenplanung", src: "capmo" },
-  { id: "gewerke",     label: "Kommende Gewerke",                hint: "Naechste Vergaben",        src: "both"  },
-  { id: "maengel",     label: "Aktuelle Themen / Offene Maengel",hint: "Capmo – Tickets",          src: "capmo" },
-  { id: "zahlung",     label: "Zahlungsplan / Checkliste",       hint: "Excel – Zahlungsplan",     src: "excel" },
-];
-const JF_TOPICS_PLAN = [
-  { id: "vergabe",     label: "Stand der Vergabe",               hint: "Excel – Auftragstabelle",  src: "excel" },
-  { id: "gewerke",     label: "Kommende Gewerke / Vergaben",     hint: "Naechste Beauftragungen",  src: "both"  },
-  { id: "terminplan",  label: "Terminplan",                      hint: "Capmo – Bauzeitenplanung", src: "capmo" },
-  { id: "maengel",     label: "Aktuelle Themen",                 hint: "Capmo – Tickets",          src: "capmo" },
-  { id: "zahlung",     label: "Zahlungsplan / Checkliste",       hint: "Excel – Zahlungsplan",     src: "excel" },
-];
-const JF_TOPICS_DONE = [
-  { id: "maengel", label: "Offene Maengel", hint: "Capmo – Tickets", src: "capmo" },
-];
+const SK_BVS     = "bv-list-v1";
+const SK_VERGABE = "bv-vergabe-v1";
+const SK_CHKLIST = "bv-chklst-v1";
+const SK_TPLAN   = "bv-tplan-v1";
+const SK_HW      = "bv-hw-v1";
 
 /* ─── BV Lists ─── */
-const ACTIVE_BVS = [
-  { num:"6022005", name:"BV Ünal" },
-  { num:"6024010", name:"BV Kasseb" },
-  { num:"6024011", name:"BV Kissler" },
-  { num:"6024012", name:"BV Hirsch" },
-  { num:"6024013", name:"BV Wortmann" },
-  { num:"6024014", name:"BV Hanika" },
-  { num:"6024015", name:"BV Barthelt (Geldern)" },
-  { num:"6024016", name:"BV Gesthuysen" },
-  { num:"6024017", name:"BV Goecke (Haus 7)" },
-  { num:"6024018", name:"BV Eichbaum" },
-  { num:"6025002", name:"BV Hundorf" },
-  { num:"6025003", name:"BV Müller Reinke" },
-  { num:"6025004", name:"BV Maslowski" },
-  { num:"6025005", name:"BV Redlin" },
-  { num:"6025006", name:"BV Bruns" },
-  { num:"6025007", name:"BV Ganea" },
-  { num:"6025008", name:"BV Bartel (Essen)" },
-  { num:"6025009", name:"BV Brenner (Veert)" },
-  { num:"6025010", name:"BV Frillendorf MFH" },
-  { num:"6025011", name:"BV Pütz" },
-  { num:"6025012", name:"BV Horn" },
-  { num:"6025014", name:"BV Fischer Kehrmann (Essen)" },
-  { num:"6025015", name:"BV Waggeling Müller (Eyll)" },
-  { num:"6025016", name:"BV Kerstein" },
-  { num:"6025017", name:"BV Sawitzki" },
-  { num:"6025018", name:"BV Neumann" },
-  { num:"6025019", name:"BV Rauhut" },
-  { num:"6025020", name:"BV Demir" },
-  { num:"6025021", name:"BV Geldi" },
-  { num:"6026001", name:"BV Celik" },
-  { num:"6026002", name:"BV Ulrich" },
-];
-const PLAN_BVS = [];
-const DONE_BVS = [
-  { num:"6024004", name:"BV Frick" },
-  { num:"6024006", name:"BV Bothe (Stelte)" },
-  { num:"6024007", name:"BV Hollender" },
-  { num:"6024009", name:"BV Schuppan" },
-];
-
-/* ─── Task Manager Default Data ─── */
-const mkTask = (title, assignee="–", status="offen") => ({
-  id: uid(), title, assignee, status, note: "", expanded: false, subtasks: [],
-});
-const DEFAULT_TASKS = [
-  {
-    "name": "Allgemein",
-    "tasks": [
-      {
-        "title": "Signatur Betriebsferien",
-        "assignee": "–",
-        "status": "offen",
-        "id": "pnkrq0a",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Terminplan allgemein",
-        "assignee": "–",
-        "status": "offen",
-        "id": "42je5cg",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Germes nachfragen für Redlin Brenner (Termin absprechen)",
-        "assignee": "–",
-        "status": "offen",
-        "id": "bx6vtii",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Termine und Unterlagen für Kehrbusch zusammenstellen",
-        "assignee": "–",
-        "status": "offen",
-        "id": "vlva6rl",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Meterriss Redlin und Brenner",
-        "assignee": "HP",
-        "status": "offen",
-        "id": "copldd7",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "k7lo1yx"
-  },
-  {
-    "name": "Kasseb",
-    "tasks": [
-      {
-        "title": "Sanitär / Heizung / Lüftung",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "2rekt50",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Innentüren + Reste Trockenbau",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "2basgm8",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "NET Garage",
-        "assignee": "DP",
-        "status": "wartend",
-        "id": "6drldfq",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Säule Stromkasten umstellen",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "n31hdy1",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Netzanschlüsse ab KW 27",
-        "assignee": "–",
-        "status": "wartend",
-        "id": "fe8xwvk",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Geländer abklären (verzinkt oder grundiert) -> ggf. bei Jung anfragen",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "2w00bh6",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Nach Hausanschlüsse Ekeltriker und Installatuer fertig",
-        "assignee": "–",
-        "status": "offen",
-        "id": "jkvz3r2",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "ov8pinv"
-  },
-  {
-    "name": "Bothe",
-    "tasks": [
-      {
-        "title": "Fliesenleger",
-        "assignee": "–",
-        "status": "wartend",
-        "id": "iycaplt",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Versiegler",
-        "assignee": "–",
-        "status": "wartend",
-        "id": "vntnh96",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Maler",
-        "assignee": "–",
-        "status": "offen",
-        "id": "c376is3",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "4snk6u8"
-  },
-  {
-    "name": "Berg",
-    "tasks": [
-      {
-        "title": "Lüfter -> Tophoven",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "bvtet0z",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Fenster -> GW",
-        "assignee": "–",
-        "status": "erledigt",
-        "id": "qimalns",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "h0ywtvn"
-  },
-  {
-    "name": "Blümke",
-    "tasks": [
-      {
-        "title": "Terrassenbelag Rest",
-        "assignee": "DP",
-        "status": "in-arbeit",
-        "id": "zeqqjzq",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "i8hoslg"
-  },
-  {
-    "name": "Frick",
-    "tasks": [
-      {
-        "title": "Malerarbeiten TH + Federdeckel - Joel Kehrbusch",
-        "assignee": "HP",
-        "status": "offen",
-        "id": "gyicddk",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "1or0dxj"
-  },
-  {
-    "name": "Janssen",
-    "tasks": [
-      {
-        "title": "Fensterbank ändern",
-        "assignee": "–",
-        "status": "offen",
-        "id": "tj25iwx",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "axsd7yo"
-  },
-  {
-    "name": "Schuppan",
-    "tasks": [
-      {
-        "title": "Rückmeldung abwarten offene Punkte",
-        "assignee": "–",
-        "status": "erledigt",
-        "id": "gf64wrb",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Restzahlung",
-        "assignee": "–",
-        "status": "wartend",
-        "id": "38z69tz",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "lcirhon"
-  },
-  {
-    "name": "Hollender",
-    "tasks": [
-      {
-        "title": "Rückmeldung Schlosser erwartet bzgl. Geländer/Terrassenbelag",
-        "assignee": "DP",
-        "status": "in-arbeit",
-        "id": "yrkzitc",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Lüftungsschlitze Fassade - Eldem anrufen",
-        "assignee": "HP",
-        "status": "erledigt",
-        "id": "oi1d96z",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "r625bdr"
-  },
-  {
-    "name": "Hanika",
-    "tasks": [
-      {
-        "title": "Rückmeldung erwartet",
-        "assignee": "HP",
-        "status": "wartend",
-        "id": "n7zyyjg",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "8i4iz88"
-  },
-  {
-    "name": "Müller Reinke",
-    "tasks": [
-      {
-        "title": "Rückmeldung zu Eigenleistungen - Gewerke einplanen",
-        "assignee": "DP",
-        "status": "erledigt",
-        "id": "z7bag30",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "qkh3hv0"
-  },
-  {
-    "name": "Bruns",
-    "tasks": [
-      {
-        "title": "Installateur klären",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "nc7bodl",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Weitere Gewerke einplanen",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "17zrb6p",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Fenstereinbau KW 22 - Fensterbänke ALU",
-        "assignee": "–",
-        "status": "erledigt",
-        "id": "67x52ql",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Fuger klären",
-        "assignee": "–",
-        "status": "erledigt",
-        "id": "kylm8ck",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Angebot Riemchen Garage",
-        "assignee": "HP",
-        "status": "erledigt",
-        "id": "w2zfe62",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "fcblsvj"
-  },
-  {
-    "name": "Hundorf",
-    "tasks": [
-      {
-        "title": "Klinkerkolonne",
-        "assignee": "HP",
-        "status": "erledigt",
-        "id": "d8y9cub",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      },
-      {
-        "title": "Vergabe: Ausbau startet ca. in 8-10 WOchen (KW 34 oder 36 nach Betriebsferien)",
-        "assignee": "DP",
-        "status": "offen",
-        "id": "tzgusy2",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "unkxtza"
-  },
-  {
-    "name": "Hirsch",
-    "tasks": [
-      {
-        "title": "Termin Decke (Lüftungsanlage)",
-        "assignee": "HP",
-        "status": "offen",
-        "id": "xwbodc6",
-        "note": "",
-        "expanded": false,
-        "subtasks": []
-      }
-    ],
-    "id": "d8a78hi"
-  }
+const EXCEL_BV_LIST = [
+  {num:'6021007',label:'Wang',addr:'Sieglinde-Ahlers-Str. 40, 47259 Duisburg',status:'abgeschlossen'},
+  {num:'6021008',label:'Vermeer',addr:'Bergstr. 13, 47559 Kranenburg',status:'abgeschlossen'},
+  {num:'6021004',label:'Adrian',addr:'Raher Feld, 41334 Nettetal',status:'abgeschlossen'},
+  {num:'6021006',label:'Thangaraj',addr:'Waldstraße 1c, 47199 Duisburg',status:'abgeschlossen'},
+  {num:'6021011',label:'Nikolic',addr:'Aenne-Brauksiepe-Str., 47259 Duisburg',status:'abgeschlossen'},
+  {num:'6021005',label:'Köhni',addr:'Waldstraße 1b, 47199 Duisburg',status:'abgeschlossen'},
+  {num:'6021012',label:'Hofmann',addr:'Katharina-Beving-Str. 19, 47259 Duisburg',status:'abgeschlossen'},
+  {num:'6021013',label:'Gamert',addr:'Halfmannsweg 2, 46519 Alpen',status:'abgeschlossen'},
+  {num:'6022002',label:'Andrees',addr:'Märchenweg 14, 47279 Duisburg',status:'abgeschlossen'},
+  {num:'6022003',label:'Kuhn',addr:'Märchenweg 14, 47279 Duisburg',status:'abgeschlossen'},
+  {num:'6022009',label:'Kunkin',addr:'Maria-Mester-Str. 3, 47259 Duisburg',status:'abgeschlossen'},
+  {num:'6022005',label:'Ünal',addr:'Wilhelmine-Bertling-Str. 59, 47259 Duisburg',status:'ausbau'},
+  {num:'6022004',label:'Bernarding',addr:'Maria-Mester-Str. 9, 47259 Duisburg',status:'abgeschlossen'},
+  {num:'6022008',label:'Gerloff',addr:'Oldenburger Str. 6, 47169 Duisburg',status:'abgeschlossen'},
+  {num:'6022007',label:'Hafer',addr:'Irene-Knoch-Str. 11, 47259 Duisburg',status:'abgeschlossen'},
+  {num:'6022006',label:'Seyen',addr:'Hans-Tenhaeff-Str. 60, 47638 Straelen',status:'abgeschlossen'},
+  {num:'6022013',label:'Zakowski',addr:'Agnes-Neuhaus-Weg,, 46485 Wesel',status:'abgeschlossen'},
+  {num:'6022010',label:'Lee´s Value GmbH',addr:'Alte Landstraße 33, 40489 Düsseldorf',status:'abgeschlossen'},
+  {num:'6023001',label:'Franzke',addr:'Stolper Str. 4, 47269 Duisburg',status:'abgeschlossen'},
+  {num:'6023004',label:'Schulze',addr:'Innsbrucker Allee 73, 47249 Duisburg',status:'abgeschlossen'},
+  {num:'6023003',label:'Ahmed',addr:'Auf der Litten, 45139 Essen',status:'abgeschlossen'},
+  {num:'6024006',label:'Bothe',addr:'Martinusstr. 20, 41468 Neuss',status:'abgeschlossen'},
+  {num:'6024001',label:'Berg',addr:'Raiffeisenstr. 40-42, 47506 Neu.-Vluyn',status:'abgeschlossen'},
+  {num:'6024003',label:'Blümke',addr:'Auf dem Scheid 30, 40668 Meerbusch',status:'abgeschlossen'},
+  {num:'6024004',label:'Frick',addr:'Kaarster Hütte 3b, 41352 Korschenbroich',status:'abgeschlossen'},
+  {num:'6024008',label:'Janßen',addr:'Maasstraße 108, 47608 Geldern',status:'abgeschlossen'},
+  {num:'6024009',label:'Schuppan',addr:'Waldstraße 8a, 47199 Duisburg',status:'abgeschlossen'},
+  {num:'6024007',label:'Hollender',addr:'Steinchenstraße 4c, 47199 Duisburg',status:'abgeschlossen'},
+  {num:'6024014',label:'Hanika',addr:'Auf der Litten 136, 45139 Essen',status:'abgeschlossen'},
+  {num:'6025003',label:'Müller / Reinke',addr:'Auf der Litten 140, 45139 Essen',status:'ausbau'},
+  {num:'6025008',label:'Bartel',addr:'Auf der Litten 142, 45139 Essen',status:'ausbau'},
+  {num:'6024010',label:'Kasseb',addr:'Katharina-Beving-Str. 21, 47259 Duisburg',status:'ausbau'},
+  {num:'6024016',label:'Gesthuysen',addr:'Himmelgeister Str. 19, 41468 Neuss',status:'rohbau'},
+  {num:'6024017',label:'Goecke',addr:'Himmelgeister Str. 17, 41468 Neuss',status:'rohbau'},
+  {num:'6025012',label:'Horn',addr:'Ammianus Str. 19, 41468 Neuss',status:'rohbau'},
+  {num:'6025011',label:'Pütz',addr:'Gartenstraße 10a, 47661 Issum',status:'ausbau'},
+  {num:'6025006',label:'Bruns',addr:'Kempener Str. 60, 47647 Kerken',status:'rohbau'},
+  {num:'6025002',label:'Hundorf',addr:'Stegmansfeld 16, 47647 Kerken',status:'rohbau'},
+  {num:'6024012',label:'Hirsch',addr:'Holzweg 48, 46509 Xanten',status:'rohbau'},
+  {num:'6024015',label:'Barthelt',addr:'Am Stendert 10, 47608 Geldern-Veert',status:'rohbau'},
+  {num:'6025007',label:'Ganea (Ausbauhaus)',addr:'Walter-Kolb-Straße 35, 47608 Geldern-Walbeck',status:'rohbau'},
+  {num:'6025009',label:'Brenner',addr:'Am Stendert 5, 47608 Geldern-Veert',status:'rohbau'},
+  {num:'6025005',label:'Redlin',addr:'Am kleinen Keyser 53, 47608 Geldern-Veert',status:'rohbau'},
+  {num:'6025018',label:'Neumann',addr:'Stegmansfeld 9, 47647 Kerken',status:'rohbau'},
+  {num:'6024013',label:'Wortmann BHG',addr:'Am Stendert, 47608 Geldern-Veert',status:'rohbau'},
+  {num:'6025016',label:'Kerstein',addr:'Stegmansfeld, 47647 Kerken',status:'vorplanung'},
+  {num:'bv_poels_(3we)',label:'Poels (3WE)',addr:'',status:'vorplanung'},
+  {num:'6025017',label:'Sawizki',addr:'Auf der Litten, 45139 Essen',status:'vorplanung'},
+  {num:'6025019',label:'Rauhut',addr:'',status:'vorplanung'},
+  {num:'6025020',label:'Demir',addr:'Am Stendert 30, 47608 Geldern-Veert',status:'vorplanung'},
+  {num:'6025021',label:'Geldi',addr:'',status:'vorplanung'},
+  {num:'6026001',label:'Celik',addr:'',status:'vorplanung'},
+  {num:'6026002',label:'Ulrich',addr:'',status:'vorplanung'},
+  {num:'6025014',label:'Fischer / Kehrmann',addr:'',status:'vorplanung'},
+  {num:'6025015',label:'Waggeling / Müller',addr:'',status:'vorplanung'}
 ];
 
-/* ─── Default Jour-Fix State ─── */
-function defaultJFState() {
-  const s = { active:{}, done:{} };
-  ACTIVE_BVS.forEach((_, i) => {
-    s.active[i] = {};
-    JF_TOPICS_ACTIVE.forEach(t => { s.active[i][t.id] = false; });
-  });
-  DONE_BVS.forEach((_, i) => {
-    s.done[i] = {};
-    JF_TOPICS_DONE.forEach(t => { s.done[i][t.id] = false; });
-  });
-  return s;
+const EXCEL_CL = {
+  '6021007':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6021008':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'32'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6021004':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'35'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x',d:'EL'}},
+  '6021006':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'37'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6021011':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'40'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6021005':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'44'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6021012':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'46'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6021013':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'49'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022002':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'2'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022003':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'2'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022009':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 8'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022005':{'bag':{st:'x',d:'01.01.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 12'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'innentueren':{st:'x',d:'EL'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'!'}},
+  '6022004':{'bag':{st:'x',d:'?'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 16'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022008':{'bag':{st:'x',d:'02.03.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 20'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022007':{'bag':{st:'x',d:'20.04.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 26'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022006':{'bag':{st:'x',d:'01.08.'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 32'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'}},
+  '6022013':{'bag':{st:'x',d:'01.01.1900'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'KW 38'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6022010':{'bag':{st:'x'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'03.03.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'20.02.2025'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6023001':{'bag':{st:'x'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'02.02.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6023004':{'bag':{st:'x'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'13.06.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'31.01.2025'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x',d:'EL'},'maengel':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6023003':{'bag':{st:'x'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'02.09.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'05.03.2025'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024006':{'bag':{st:'x'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'10.09.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'abnahme':{st:'x',d:'12.12.2025'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'!'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024001':{'bag':{st:'x',d:'21.08.'},'plaene':{st:'x',d:'09.10.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'22.10.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'25.09.2025'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024003':{'bag':{st:'x',d:'28.08.'},'plaene':{st:'x',d:'09.10.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'04.12.2024'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'27.10.2025'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x',d:'EL'},'maengel':{st:'!'},'unterlagen':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024004':{'bag':{st:'x',d:'05.11.'},'plaene':{st:'x',d:'17.01.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'19.03.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'22.01.2026'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x',d:'EL'},'maengel':{st:'!'},'unterlagen':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024008':{'bag':{st:'x',d:'20.11.'},'plaene':{st:'x',d:'03.12.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x',d:'EL'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'14.02.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x',d:'EL'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'14.11.2025'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x',d:'EL'},'maengel':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x',d:'EL'}},
+  '6024009':{'bag':{st:'x',d:'06.02.'},'plaene':{st:'x',d:'28.02.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'22.04.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'28.01.2026'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x',d:'EL'},'maengel':{st:'x',d:'?'},'unterlagen':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024007':{'bag':{st:'x',d:'12.02.'},'plaene':{st:'x',d:'04.03.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'22.04.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'x'},'innentueren':{st:'x'},'versieg':{st:'x'},'bd':{st:'x'},'abnahme':{st:'x',d:'03.02.2026'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'strom_ab':{st:'x'},'maengel':{st:'!'},'unterlagen':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6024014':{'bag':{st:'x',d:'17.02.'},'plaene':{st:'x',d:'27.02.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'05.05.2025'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x',d:'EL'},'feininstall':{st:'x',d:'EL'},'innentueren':{st:'x',d:'EL'},'versieg':{st:'x',d:'EL'},'bd':{st:'x'},'abnahme':{st:'x',d:'21.04.2026'},'tuev5':{st:'x'},'wc_ab':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'},'rschluss':{st:'x'},'rgsa':{st:'x'}},
+  '6025003':{'bag':{st:'x',d:'12.06.'},'plaene':{st:'x',d:'?'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'27.10.2025'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x',d:'EL'},'innentueren':{st:'x',d:'EL'},'versieg':{st:'x',d:'EL'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'}},
+  '6025008':{'bag':{st:'x',d:'12.06.'},'plaene':{st:'x',d:'14.07.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'29.09.2025'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'}},
+  '6024010':{'bag':{st:'x',d:'03.07.'},'plaene':{st:'x',d:'29.07.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'vergabe_ab':{st:'x'},'baubeginn':{st:'x',d:'08.09.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'tuev4':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'feininstall':{st:'!'},'innentueren':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'},'r11':{st:'x'},'r12':{st:'x'},'r13':{st:'x'}},
+  '6024016':{'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'08.12.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'!'},'cont_ab':{st:'x'},'rb_anzeige':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'rgsa':{st:'x',d:'2'}},
+  '6024017':{'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'08.12.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'!'},'rb_anzeige':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'rgsa':{st:'x',d:'2'}},
+  '6025012':{'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'08.12.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachdecker':{st:'!'},'rb_anzeige':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'rgsa':{st:'x',d:'2'}},
+  '6025011':{'bag':{st:'x'},'plaene':{st:'x'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x',d:'EL'},'geruest':{st:'x'},'baustrom':{st:'x'},'gsa':{st:'x',d:'EL'},'vergabe_ab':{st:'x',d:'EL'},'baubeginn':{st:'x',d:'18.09.2025'},'bba':{st:'x'},'bschild':{st:'x'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x',d:'EL'},'dachdecker':{st:'x',d:'EL'},'cont_ab':{st:'x'},'rb_anzeige':{st:'x'},'tp_ausbau':{st:'x'},'fenster':{st:'x'},'aussenputz':{st:'x'},'tuev3':{st:'x'},'rohinstall':{st:'x'},'innenputz':{st:'x'},'fbh':{st:'x'},'estrich':{st:'x'},'aufheizen':{st:'x'},'spachtel':{st:'x'},'fliesen':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'}},
+  '6025006':{'bag':{st:'x',d:'16.09.'},'plaene':{st:'x',d:'07.10.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x',d:'EL'},'baubeginn':{st:'x',d:'02.02.2026'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x',d:'EL'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'cont_ab':{st:'x'},'rb_anzeige':{st:'!'},'tp_ausbau':{st:'!'},'tuev3':{st:'!'},'fliesen':{st:'x',d:'EL'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'x'},'r9':{st:'x'},'r10':{st:'x'}},
+  '6025002':{'bag':{st:'x',d:'29.09.'},'plaene':{st:'x',d:'07.11.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x',d:'A'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'23.02.2026'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'!'},'rb_anzeige':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r5':{st:'x'},'r6':{st:'x'},'r7':{st:'x'}},
+  '6024012':{'bag':{st:'x',d:'14.10.'},'plaene':{st:'x',d:'05.01.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'bba':{st:'!'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'}},
+  '6024015':{'bag':{st:'x',d:'21.10.'},'plaene':{st:'x',d:'09.12.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'bba':{st:'x'},'bschild':{st:'!'},'erd':{st:'x',d:'EL'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'!'},'mat_eg':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'}},
+  '6025007':{'bag':{st:'x',d:'30.10.'},'plaene':{st:'x',d:'19.01.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x',d:'EL'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'vergabe_ab':{st:'x',d:'EL'},'baubeginn':{st:'x',d:'12.02.2026'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x',d:'EL'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'!'},'rb_anzeige':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'}},
+  '6025009':{'bag':{st:'x',d:'12.11.'},'plaene':{st:'x',d:'09.12.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'08.12.'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'17.03.2026'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'rb_anzeige':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'r8':{st:'!'},'rgsa':{st:'x',d:'1'}},
+  '6025005':{'bag':{st:'x',d:'12.11.'},'plaene':{st:'x',d:'09.12.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'08.12.'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'17.03.2026'},'bba':{st:'x'},'bschild':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'dachstuhl':{st:'x'},'dachdecker':{st:'x'},'rb_anzeige':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'},'r7':{st:'x'},'rgsa':{st:'x',d:'1'}},
+  '6025018':{'bag':{st:'x',d:'04.12.'},'plaene':{st:'x',d:'19.01.'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x',d:'A'},'geruest':{st:'x'},'baustrom':{st:'x',d:'16.01.'},'gsa':{st:'x'},'baubeginn':{st:'x',d:'06.05.2026'},'bba':{st:'x'},'bschild':{st:'!'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'}},
+  '6024013':{'bag':{st:'x',d:'04.12.'},'plaene':{st:'x',d:'05.01.2025'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'fen_vergabe':{st:'x'},'geruest':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'bba':{st:'x'},'bschild':{st:'!'},'erd':{st:'x'},'feinabs':{st:'x'},'boplatte':{st:'x'},'minibox':{st:'x'},'mat_eg':{st:'x'},'eg_decke':{st:'x'},'mat_og':{st:'x'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'},'r4':{st:'x'},'r6':{st:'x'}},
+  '6025016':{'auftragsb':{st:'x',d:'07.07.2026'},'bag':{st:'x',d:'13.01.2026'},'plaene':{st:'x',d:'25.02.2026'},'statik':{st:'x'},'ws':{st:'x'},'bgu':{st:'x'},'fertigteile':{st:'x'},'baustrom':{st:'x',d:'EL'},'gsa':{st:'x'},'wc_auf':{st:'x',d:'?'},'erd':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'}},
+  '6025017':{'auftragsb':{st:'x',d:'07.07.2025'},'bag':{st:'x',d:'10.02.2026'},'plaene':{st:'x',d:'04.03.2026'},'baustrom':{st:'!'},'wc_auf':{st:'x'},'erd':{st:'!'},'r1':{st:'x'},'r2':{st:'x'},'r3':{st:'x'}},
+  '6025019':{'auftragsb':{st:'x',d:'24.10.2026'},'bag':{st:'x',d:'22.04.2026'}},
+  '6025020':{'auftragsb':{st:'x',d:'27.11.2026'},'bag':{st:'x',d:'13.04.2026'},'plaene':{st:'x',d:'11.05.'},'ws':{st:'x'},'bgu':{st:'x'},'gsa':{st:'x',d:'A'}}
+};
+
+/* ─── Gewerke ─── */
+const GEWERKE = [
+  "Rohbau","Zimmerarbeiten","Dachdeckerarbeiten","Gerüstarbeiten",
+  "Fenster & Haustür","Trockenbau","Elektro","Heizung",
+  "Sanitär","Wärmepumpe","Estrich","Fassadenputz",
+  "Fugenarbeiten","Innenputz","Spachtelarbeiten","Malerarbeiten",
+  "Fliesenarbeiten","Holztreppe","Tischlerarbeiten","Schlosserarbeiten",
+  "Versiegelung","Bodenbelag","Blower-Door","Endreinigung"
+];
+const GW_ABBR = [
+  "Rohb","Zimm","Dach","Gerü","Fen","Tro","Ele","Heiz",
+  "San","WP","Estr","Fass","Fug","InPu","Spa","Mal",
+  "Flie","Trep","Tis","Schlo","Vers","Bod","BD","Rein"
+];
+
+/* ─── Vergabe Status ─── */
+const VG_META = {
+  '':  {label:'–',   color:'#475569',bg:'rgba(71,85,105,.1)',   border:'rgba(71,85,105,.2)'},
+  'a': {label:'A',   color:'#f59e0b',bg:'rgba(245,158,11,.18)', border:'rgba(245,158,11,.4)'},
+  'x': {label:'✓',  color:'#4ade80',bg:'rgba(74,222,128,.15)', border:'rgba(74,222,128,.35)'},
+  'n': {label:'n/a', color:'#334155',bg:'rgba(30,41,59,.5)',    border:'rgba(51,65,85,.4)'},
+  '!': {label:'!',   color:'#f87171',bg:'rgba(248,113,113,.18)',border:'rgba(248,113,113,.4)'},
+};
+const VG_CYCLE = ['','a','x','n','!'];
+
+function normV(v) {
+  if (!v) return '';
+  const s = String(v).trim().toLowerCase();
+  if (s==='x') return 'x'; if (s==='a') return 'a';
+  if (s==='n') return 'n'; if (s==='!') return '!';
+  return '';
 }
+
+/* Excel-Vorbelgung (Rohbau..Endreinigung je BV) */
+const EXCEL_VG = {
+  '6022005':['x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x','x'],
+  '6024010':['x','n','x','x','x','x','x','x','x','x','x','x','n','x','x','n','x','n','','','','','',''],
+  '6024012':['','','','x','','','','','','','','','','','','','','','','','','','',''],
+  '6024013':['','','','','','','','','','','','','','','','','','','','','','','',''],
+  '6024014':['x','x','x','x','x','x','x','x','x','x','x','x','n','x','x','x','x','n','n','n','!','n','!','!'],
+  '6024015':['','','','x','','','','','','','','','','','','','','','','','','','',''],
+  '6024016':['x','x','x','x','x','','x','x','x','x','','','','','','','','','','','','','',''],
+  '6024017':['x','x','x','x','x','','x','x','x','x','','','','','','','','','','','','','',''],
+  '6025002':['x','x','x','x','a','','','','','','','','','','','','','','','','','','',''],
+  '6025003':['x','x','x','x','x','x','x','x','x','x','x','n','n','x','x','n','x','n','x','n','','','',''],
+  '6025005':['x','x','x','x','x','','x','x','x','x','','x','a','a','','n','','n','','','','','',''],
+  '6025006':['x','x','x','x','x','x','x','a','a','a','x','a','x','a','a','n','n','n','x','','','','',''],
+  '6025007':['x','x','x','x','','','','','','','','','','','','','','','','','','','',''],
+  '6025008':['x','x','x','x','x','x','x','x','x','x','a','x','x','x','x','n','','','','','','','',''],
+  '6025009':['x','x','x','x','x','','x','x','x','x','','a','a','a','','n','','x','','','','','',''],
+  '6025011':['x','x','x','x','x','x','x','x','x','x','x','n','x','x','x','x','','n','','','','','',''],
+  '6025012':['x','','x','x','x','','x','x','x','x','','n','','','','','','','','','','','',''],
+  '6025018':['x','a','a','x','','','','','','','','','','','','','','','','','','','',''],
+};
+
+function buildVergabe(bvList, saved) {
+  const r = saved ? {...saved} : {};
+  bvList.forEach(bv => {
+    if (!r[bv.num]) {
+      const raw = EXCEL_VG[bv.num] || [];
+      const e = {};
+      GEWERKE.forEach((g,i) => { e[g] = {status: normV(raw[i]||''), hw:''}; });
+      r[bv.num] = e;
+    }
+  });
+  return r;
+}
+
+function buildCheckliste(bvList, saved) {
+  // Merge EXCEL_CL defaults with saved data; migrate old {done,date,note} → {st,date,note}
+  const r = {};
+  bvList.forEach(bv => {
+    const excel = EXCEL_CL[bv.num] || {};
+    const savd  = saved ? (saved[bv.num] || {}) : {};
+    const merged = {};
+    // First apply excel defaults
+    Object.entries(excel).forEach(([id,v]) => {
+      merged[id] = {st: v.st||'', date: v.d||'', note: ''};
+    });
+    // Then overlay saved (supports both old format {done} and new {st})
+    Object.entries(savd).forEach(([id,v]) => {
+      const st = v.st !== undefined ? v.st : (v.done ? 'x' : '');
+      merged[id] = {st, date: v.date||'', note: v.note||''};
+    });
+    r[bv.num] = merged;
+  });
+  return r;
+}
+
+/* ─── Checkliste Phases ─── */
+const CL_PHASES = [
+  {id:'vp',label:'Vorplanung',color:'#818cf8',items:[
+    {id:'auftragsb',label:'Auftragsbestätigung'},
+    {id:'bag',label:'BAG (Bauantrag)'},
+    {id:'plaene',label:'Pläne freigegeben'},
+    {id:'statik',label:'Statik'},
+    {id:'ws',label:'WS-Nachweis'},
+    {id:'bgu',label:'BGU'},
+    {id:'fertigteile',label:'Fertigteile bestellt'},
+    {id:'fen_vergabe',label:'Fenster Vergabe'},
+    {id:'geruest',label:'Gerüst geplant'},
+    {id:'baustrom',label:'Baustrom (A=Auftrag / X=Bereit)'},
+    {id:'gsa',label:'GSA Angebot'},
+    {id:'vergabe_ab',label:'Vergabe abgeschlossen'},
+  ]},
+  {id:'rb',label:'Rohbau',color:'#f59e0b',items:[
+    {id:'baubeginn',label:'Baubeginn'},
+    {id:'bba',label:'Baubeginnanzeige'},
+    {id:'bschild',label:'Baustellenschild'},
+    {id:'wc_auf',label:'WC aufgestellt'},
+    {id:'erd',label:'Erdarbeiten'},
+    {id:'feinabs',label:'Feinabsteckung'},
+    {id:'boplatte',label:'Bodenplatte'},
+    {id:'minibox',label:'Mini Container'},
+    {id:'mat_eg',label:'Material EG'},
+    {id:'eg_decke',label:'EG-Decke'},
+    {id:'mat_og',label:'Material OG'},
+    {id:'dachstuhl',label:'Dachstuhl'},
+    {id:'dachdecker',label:'Dachdeckerarbeiten'},
+    {id:'cont_ab',label:'Container abbestellt'},
+    {id:'rb_anzeige',label:'Rohbaufertigstellungsanzeige'},
+    {id:'tp_ausbau',label:'Terminplan Ausbau versendet'},
+  ]},
+  {id:'ab',label:'Ausbau',color:'#38bdf8',items:[
+    {id:'fenster',label:'Fenster'},
+    {id:'aussenputz',label:'Außenputz / Fassade / Fuger'},
+    {id:'tuev3',label:'TÜV Phase 3'},
+    {id:'rohinstall',label:'Rohinstallation'},
+    {id:'innenputz',label:'Innenputz'},
+    {id:'fbh',label:'Fußbodenheizung'},
+    {id:'tuev4',label:'TÜV Phase 4'},
+    {id:'estrich',label:'Estrich'},
+    {id:'aufheizen',label:'Aufheizen'},
+    {id:'spachtel',label:'Spachtelarbeiten'},
+    {id:'fliesen',label:'Fliesenarbeiten'},
+    {id:'feininstall',label:'Feininstallation'},
+    {id:'innentueren',label:'Innentüren'},
+    {id:'versieg',label:'Versiegelung'},
+    {id:'bd',label:'Blower-Door'},
+  ]},
+  {id:'abl',label:'Abschluss',color:'#4ade80',items:[
+    {id:'abnahme',label:'Abnahme / Fertigstellung'},
+    {id:'tuev5',label:'TÜV Phase 5 / Abnahme'},
+    {id:'wc_ab',label:'WC abbestellt'},
+    {id:'strom_ab',label:'Stromkasten abbestellt'},
+    {id:'maengel',label:'Mängel abgestellt'},
+    {id:'unterlagen',label:'Unterlagen VHV'},
+  ]},
+  {id:'zp',label:'Zahlungsplan',color:'#e879f9',items:[
+    {id:'r1',label:'1. Rate – Auftragsbestätigung'},
+    {id:'r2',label:'2. Rate – Bauantrag'},
+    {id:'r3',label:'3. Rate – Baugenehmigung'},
+    {id:'r4',label:'4. Rate – Bodenplatte'},
+    {id:'r5',label:'5. Rate – Kellerdecke'},
+    {id:'r6',label:'6. Rate – EG-Decke'},
+    {id:'r7',label:'7. Rate – Rohbau fertig'},
+    {id:'r8',label:'8. Rate – Dacheindeckung'},
+    {id:'r9',label:'9. Rate – Fenster'},
+    {id:'r10',label:'10. Rate – Außenputz'},
+    {id:'r11',label:'11. Rate – Innenputz'},
+    {id:'r12',label:'12. Rate – Estrich'},
+    {id:'r13',label:'13. Rate – Heizung'},
+    {id:'sr',label:'Schlussrechnung'},
+    {id:'gsa2',label:'GSA'},
+  ]},
+];
+
+/* ─── KW Utilities ─── */
+function getKWNow() {
+  const d = new Date();
+  const utc = new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+  const dow = utc.getUTCDay()||7;
+  utc.setUTCDate(utc.getUTCDate()+4-dow);
+  const ys = new Date(Date.UTC(utc.getUTCFullYear(),0,1));
+  return {kw:Math.ceil(((utc-ys)/86400000+1)/7), year:utc.getUTCFullYear()};
+}
+function getMonday(kw,year) {
+  const jan4 = new Date(year,0,4);
+  const dow = jan4.getDay()||7;
+  const mon = new Date(jan4.getTime()-(dow-1)*86400000);
+  mon.setDate(mon.getDate()+(kw-1)*7);
+  return mon;
+}
+function fmtDD(d) { return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'}); }
+
+/* ─── Default Handwerker ─── */
+const DEFAULT_HW = [
+  {id:uid(),firma:'Tophoven',name:'',gewerk:'Sanitär',tel:'',email:'',notiz:'Lüftungsarbeiten'},
+  {id:uid(),firma:'Sapsiz',name:'',gewerk:'Fugenarbeiten',tel:'',email:'',notiz:''},
+  {id:uid(),firma:'Eldem',name:'',gewerk:'Fassadenputz',tel:'',email:'',notiz:''},
+  {id:uid(),firma:'Joel Kehrbusch',name:'Joel',gewerk:'Malerarbeiten',tel:'',email:'',notiz:''},
+  {id:uid(),firma:'Mylius',name:'',gewerk:'Elektro',tel:'',email:'',notiz:'Baustrom'},
+  {id:uid(),firma:'GW Fenster',name:'',gewerk:'Fenster & Haustür',tel:'',email:'',notiz:''},
+];
+
+/* ─── Status/Assignee (Aufgaben) ─── */
+const STATUS_CYCLE   = ["offen","in-arbeit","wartend","erledigt"];
+const ASSIGNEE_CYCLE = ["–","HP","DP"];
+const STATUS_META = {
+  offen:      {label:"Offen",     color:"#64748b",bg:"rgba(100,116,139,.18)",border:"rgba(100,116,139,.35)"},
+  "in-arbeit":{label:"In Arbeit", color:"#f59e0b",bg:"rgba(245,158,11,.18)", border:"rgba(245,158,11,.35)"},
+  wartend:    {label:"Wartend",   color:"#818cf8", bg:"rgba(129,140,248,.18)",border:"rgba(129,140,248,.35)"},
+  erledigt:   {label:"Erledigt",  color:"#4ade80", bg:"rgba(74,222,128,.18)", border:"rgba(74,222,128,.35)"},
+};
 
 /* ══════════════════════════════════════════════════════════════
    CSS
 ══════════════════════════════════════════════════════════════ */
 const CSS = `
-*, *::before, *::after { box-sizing: border-box; margin:0; padding:0; }
-
-:root {
-  --bg:       #0d1117;
-  --surface:  #161b22;
-  --surface2: #1c2230;
-  --border:   rgba(255,255,255,.08);
-  --border2:  rgba(255,255,255,.14);
-  --text:     #e6edf3;
-  --muted:    #7d8590;
-  --accent:   #58a6ff;
-  --font:     'IBM Plex Sans', sans-serif;
-  --mono:     'IBM Plex Mono', monospace;
-  --radius:   8px;
-  --radius-lg:12px;
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2230;
+  --border:rgba(255,255,255,.08);--border2:rgba(255,255,255,.14);
+  --text:#e6edf3;--muted:#7d8590;--accent:#58a6ff;
+  --font:'IBM Plex Sans',sans-serif;--mono:'IBM Plex Mono',monospace;
+  --radius:8px;--radius-lg:12px;
 }
-
-body { background: var(--bg); color: var(--text); font-family: var(--font); font-size:14px; min-height:100vh; }
-
-/* ─── Nav ─── */
-.nav { display:flex; gap:4px; padding:16px 20px 0; border-bottom:1px solid var(--border); background:var(--surface); position:sticky; top:0; z-index:100; align-items:flex-end; }
-.nav-btn { padding:10px 18px; border:none; background:none; color:var(--muted); font-family:var(--font); font-size:13px; font-weight:500; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .15s; white-space:nowrap; }
-.nav-btn:hover { color:var(--text); }
-.nav-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
-.nav-spacer { flex:1; }
-.print-btn { margin-bottom:6px; margin-right:4px; padding:6px 14px; background:none; border:1px solid var(--border2); border-radius:var(--radius); color:var(--muted); font-family:var(--font); font-size:12px; cursor:pointer; display:flex; align-items:center; gap:6px; transition:all .15s; }
-.print-btn:hover { color:var(--text); border-color:rgba(255,255,255,.3); }
-
-/* ─── Layout ─── */
-.page { padding:24px 20px; max-width:860px; margin:0 auto; }
-
-/* ─── Summary strip ─── */
-.summary { display:flex; gap:10px; margin-bottom:24px; flex-wrap:wrap; }
-.sum-card { flex:1; min-width:100px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; }
-.sum-val { font-size:22px; font-weight:600; color:var(--text); font-family:var(--mono); }
-.sum-label { font-size:11px; color:var(--muted); margin-top:2px; }
-
-/* ─── Section labels ─── */
-.section-hd { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:20px 0 10px; padding-left:2px; }
-
-/* ─── Jour Fix Cards ─── */
-.jf-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); margin-bottom:8px; overflow:hidden; }
-.jf-header { display:flex; align-items:center; gap:10px; padding:12px 16px; cursor:pointer; transition:background .12s; }
-.jf-header:hover { background:var(--surface2); }
-.jf-num { font-size:11px; color:var(--muted); min-width:56px; font-family:var(--mono); }
-.jf-title { font-size:14px; font-weight:500; flex:1; }
-.badge-done { font-size:10px; font-weight:600; background:rgba(74,222,128,.15); color:#4ade80; padding:2px 8px; border-radius:4px; border:1px solid rgba(74,222,128,.25); }
-.jf-prog { display:flex; align-items:center; gap:8px; }
-.jf-bar { width:64px; height:3px; background:var(--border); border-radius:2px; overflow:hidden; }
-.jf-fill { height:100%; background:#4ade80; border-radius:2px; transition:width .3s; }
-.jf-pct { font-size:11px; color:var(--muted); font-family:var(--mono); min-width:28px; text-align:right; }
-.jf-chev { color:var(--muted); font-size:14px; transition:transform .2s; }
-.jf-chev.open { transform:rotate(180deg); }
-.jf-body { border-top:1px solid var(--border); }
-.jf-row { display:flex; align-items:flex-start; gap:12px; padding:10px 16px; border-bottom:1px solid var(--border); }
-.jf-row:last-of-type { border-bottom:none; }
-.jf-row input[type=checkbox] { width:15px; height:15px; margin-top:1px; cursor:pointer; accent-color:#4ade80; flex-shrink:0; }
-.jf-row-info { flex:1; }
-.jf-row-label { font-size:13px; line-height:1.4; }
-.jf-row-label.done { text-decoration:line-through; color:var(--muted); }
-.jf-row-hint { display:flex; align-items:center; gap:6px; margin-top:3px; font-size:11px; color:var(--muted); }
-.src-tag { font-size:10px; font-weight:600; padding:1px 6px; border-radius:3px; }
-.src-capmo { background:rgba(88,166,255,.15); color:#58a6ff; }
-.src-excel { background:rgba(74,222,128,.12); color:#4ade80; }
-.src-both { background:rgba(245,158,11,.12); color:#f59e0b; }
-.jf-footer { display:flex; align-items:center; justify-content:space-between; padding:9px 16px; background:var(--surface2); border-top:1px solid var(--border); }
-.btn-ghost { background:none; border:none; color:var(--muted); font-family:var(--font); font-size:12px; cursor:pointer; display:flex; align-items:center; gap:5px; }
-.btn-ghost:hover { color:var(--text); }
-.done-badge { font-size:12px; color:#4ade80; font-weight:500; display:flex; align-items:center; gap:4px; }
-
-/* ─── Task Manager ─── */
-.filters { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; align-items:center; }
-.filter-group { display:flex; gap:4px; align-items:center; }
-.filter-group span { font-size:11px; color:var(--muted); padding:0 4px; }
-.f-btn { padding:5px 12px; border:1px solid var(--border2); border-radius:20px; background:none; color:var(--muted); font-family:var(--font); font-size:12px; cursor:pointer; transition:all .12s; }
-.f-btn:hover { border-color:rgba(255,255,255,.25); color:var(--text); }
-.f-btn.active { background:var(--accent); border-color:var(--accent); color:#0d1117; font-weight:600; }
-
-/* ─── Drag & Drop ─── */
-.tm-project { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); margin-bottom:12px; overflow:hidden; transition:box-shadow .15s, opacity .15s, border-color .15s; }
-.tm-project.dragging { opacity:.45; border-color:var(--accent); }
-.tm-project.drag-over { box-shadow:0 0 0 2px var(--accent); border-color:var(--accent); }
-.tm-project.drag-above { border-top:2px solid var(--accent); }
-.tm-project.drag-below { border-bottom:2px solid var(--accent); }
-.tm-proj-hd { display:flex; align-items:center; gap:10px; padding:12px 16px; }
-.drag-handle { color:var(--muted); cursor:grab; font-size:16px; padding:0 2px; user-select:none; line-height:1; transition:color .12s; }
-.drag-handle:hover { color:var(--text); }
-.drag-handle:active { cursor:grabbing; }
-.tm-proj-name { font-size:14px; font-weight:600; flex:1; }
-.tm-proj-count { font-size:11px; color:var(--muted); font-family:var(--mono); }
-.btn-icon { background:none; border:none; color:var(--muted); cursor:pointer; font-size:16px; padding:2px 4px; line-height:1; transition:color .12s; }
-.btn-icon:hover { color:var(--text); }
-.tm-task { display:flex; flex-direction:column; border-top:1px solid var(--border); }
-.tm-task-row { display:flex; align-items:center; gap:8px; padding:8px 16px; transition:background .1s; }
-.tm-task-row:hover { background:var(--surface2); }
-.status-pill { font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px; cursor:pointer; white-space:nowrap; border:1px solid; transition:all .12s; }
-.assignee-pill { font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px; cursor:pointer; background:var(--surface2); border:1px solid var(--border2); color:var(--text); min-width:34px; text-align:center; transition:background .12s; }
-.assignee-pill:hover { background:rgba(255,255,255,.1); }
-.task-title { flex:1; font-size:13px; cursor:pointer; }
-.task-title.done { text-decoration:line-through; color:var(--muted); }
-.tm-expand { background:var(--surface2); border-top:1px solid var(--border); padding:10px 16px 12px 44px; }
-.note-inp { width:100%; background:var(--bg); border:1px solid var(--border2); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:12px; padding:6px 10px; resize:none; outline:none; }
-.note-inp:focus { border-color:var(--accent); }
-.subs { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
-.sub-row { display:flex; align-items:center; gap:8px; }
-.sub-row input[type=checkbox] { accent-color:var(--accent); cursor:pointer; }
-.sub-title { font-size:12px; color:var(--muted); }
-.sub-title.done { text-decoration:line-through; }
-.sub-actions { display:flex; gap:6px; margin-top:8px; }
-
-.add-task-row { display:flex; gap:8px; padding:8px 16px; border-top:1px solid var(--border); }
-.add-task-inp { flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:13px; padding:6px 10px; outline:none; }
-.add-task-inp:focus { border-color:var(--accent); }
-
-.btn-primary { background:var(--accent); border:none; color:#0d1117; font-family:var(--font); font-size:12px; font-weight:600; padding:6px 14px; border-radius:var(--radius); cursor:pointer; }
-.btn-primary:hover { opacity:.88; }
-.btn-cancel { background:none; border:1px solid var(--border2); color:var(--muted); font-family:var(--font); font-size:12px; padding:6px 12px; border-radius:var(--radius); cursor:pointer; }
-.btn-cancel:hover { color:var(--text); }
-
-.add-bv-row { display:flex; gap:8px; margin-top:12px; }
-.add-bv-inp { flex:1; background:var(--surface); border:1px solid var(--border2); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:13px; padding:8px 12px; outline:none; }
-.add-bv-inp:focus { border-color:var(--accent); }
-
-.empty { text-align:center; padding:40px; color:var(--muted); font-size:13px; }
-
-/* ─── Print Styles ─── */
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+.nav{display:flex;gap:4px;padding:12px 16px 0;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:100;align-items:flex-end;overflow-x:auto}
+.nav-btn{padding:8px 14px;border:none;background:none;color:var(--muted);font-family:var(--font);font-size:13px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s;white-space:nowrap;flex-shrink:0}
+.nav-btn:hover{color:var(--text)}
+.nav-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.nav-spacer{flex:1;min-width:8px}
+.print-btn{margin-bottom:6px;margin-right:4px;padding:5px 12px;background:none;border:1px solid var(--border2);border-radius:var(--radius);color:var(--muted);font-family:var(--font);font-size:12px;cursor:pointer;display:flex;align-items:center;gap:5px;transition:all .15s;flex-shrink:0}
+.print-btn:hover{color:var(--text);border-color:rgba(255,255,255,.3)}
+.page{padding:20px 16px;max-width:1100px;margin:0 auto}
+.page-wide{padding:16px;width:100%;box-sizing:border-box}
+.summary{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.sum-card{flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
+.sum-val{font-size:20px;font-weight:600;color:var(--text);font-family:var(--mono)}
+.sum-label{font-size:11px;color:var(--muted);margin-top:2px}
+.section-hd{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:20px 0 10px;padding-left:2px}
+/* Jour Fix */
+.jf-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:8px;overflow:hidden}
+.jf-header{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;transition:background .12s}
+.jf-header:hover{background:var(--surface2)}
+.jf-num{font-size:11px;color:var(--muted);min-width:56px;font-family:var(--mono)}
+.jf-title{font-size:14px;font-weight:500;flex:1}
+.jf-prog{display:flex;align-items:center;gap:8px}
+.jf-bar{width:64px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.jf-fill{height:100%;background:#4ade80;border-radius:2px;transition:width .3s}
+.jf-pct{font-size:11px;color:var(--muted);font-family:var(--mono);min-width:28px;text-align:right}
+.jf-chev{color:var(--muted);font-size:14px;transition:transform .2s}
+.jf-chev.open{transform:rotate(180deg)}
+.jf-body{border-top:1px solid var(--border)}
+.jf-row{display:flex;align-items:flex-start;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border)}
+.jf-row:last-of-type{border-bottom:none}
+.jf-row input[type=checkbox]{width:15px;height:15px;margin-top:1px;cursor:pointer;accent-color:#4ade80;flex-shrink:0}
+.jf-row-info{flex:1}
+.jf-row-label{font-size:13px;line-height:1.4}
+.jf-row-label.done{text-decoration:line-through;color:var(--muted)}
+.jf-row-hint{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:11px;color:var(--muted)}
+.src-tag{font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px}
+.src-capmo{background:rgba(88,166,255,.15);color:#58a6ff}
+.src-excel{background:rgba(74,222,128,.12);color:#4ade80}
+.src-both{background:rgba(245,158,11,.12);color:#f59e0b}
+.jf-footer{display:flex;align-items:center;justify-content:space-between;padding:9px 16px;background:var(--surface2);border-top:1px solid var(--border)}
+.btn-ghost{background:none;border:none;color:var(--muted);font-family:var(--font);font-size:12px;cursor:pointer;display:flex;align-items:center;gap:5px}
+.btn-ghost:hover{color:var(--text)}
+.done-badge{font-size:12px;color:#4ade80;font-weight:500;display:flex;align-items:center;gap:4px}
+/* Task Manager */
+.filters{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;align-items:center}
+.filter-group{display:flex;gap:4px;align-items:center}
+.filter-group span{font-size:11px;color:var(--muted);padding:0 4px}
+.f-btn{padding:5px 12px;border:1px solid var(--border2);border-radius:20px;background:none;color:var(--muted);font-family:var(--font);font-size:12px;cursor:pointer;transition:all .12s}
+.f-btn:hover{border-color:rgba(255,255,255,.25);color:var(--text)}
+.f-btn.active{background:var(--accent);border-color:var(--accent);color:#0d1117;font-weight:600}
+.tm-project{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden;transition:box-shadow .15s,opacity .15s,border-color .15s}
+.tm-project.dragging{opacity:.45;border-color:var(--accent)}
+.tm-project.drag-over{box-shadow:0 0 0 2px var(--accent);border-color:var(--accent)}
+.tm-proj-hd{display:flex;align-items:center;gap:10px;padding:12px 16px}
+.drag-handle{color:var(--muted);cursor:grab;font-size:16px;padding:0 2px;user-select:none;line-height:1;transition:color .12s}
+.drag-handle:hover{color:var(--text)}
+.drag-handle:active{cursor:grabbing}
+.tm-proj-name{font-size:14px;font-weight:600;flex:1}
+.tm-proj-count{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.btn-icon{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 4px;line-height:1;transition:color .12s}
+.btn-icon:hover{color:var(--text)}
+.tm-task{display:flex;flex-direction:column;border-top:1px solid var(--border)}
+.tm-task-row{display:flex;align-items:center;gap:8px;padding:8px 16px;transition:background .1s}
+.tm-task-row:hover{background:var(--surface2)}
+.status-pill{font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;cursor:pointer;white-space:nowrap;border:1px solid;transition:all .12s}
+.assignee-pill{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border2);color:var(--text);min-width:34px;text-align:center;transition:background .12s}
+.assignee-pill:hover{background:rgba(255,255,255,.1)}
+.task-title{flex:1;font-size:13px;cursor:pointer}
+.task-title.done{text-decoration:line-through;color:var(--muted)}
+.tm-expand{background:var(--surface2);border-top:1px solid var(--border);padding:10px 16px 12px 44px}
+.note-inp{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font);font-size:12px;padding:6px 10px;resize:none;outline:none}
+.note-inp:focus{border-color:var(--accent)}
+.subs{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.sub-row{display:flex;align-items:center;gap:8px}
+.sub-row input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
+.sub-title{font-size:12px;color:var(--muted)}
+.sub-title.done{text-decoration:line-through}
+.sub-actions{display:flex;gap:6px;margin-top:8px}
+.add-task-row{display:flex;gap:8px;padding:8px 16px;border-top:1px solid var(--border)}
+.add-task-inp{flex:1;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font);font-size:13px;padding:6px 10px;outline:none}
+.add-task-inp:focus{border-color:var(--accent)}
+.btn-primary{background:var(--accent);border:none;color:#0d1117;font-family:var(--font);font-size:12px;font-weight:600;padding:6px 14px;border-radius:var(--radius);cursor:pointer}
+.btn-primary:hover{opacity:.88}
+.btn-cancel{background:none;border:1px solid var(--border2);color:var(--muted);font-family:var(--font);font-size:12px;padding:6px 12px;border-radius:var(--radius);cursor:pointer}
+.btn-cancel:hover{color:var(--text)}
+.add-bv-row{display:flex;gap:8px;margin-top:12px}
+.add-bv-inp{flex:1;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font);font-size:13px;padding:8px 12px;outline:none}
+.add-bv-inp:focus{border-color:var(--accent)}
+.empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
+/* Vergabe */
+.vg-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg)}
+.vg-table{border-collapse:collapse;width:max-content;min-width:100%}
+.vg-table th,.vg-table td{border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.vg-table th:last-child,.vg-table td:last-child{border-right:none}
+.vg-th-bv{background:var(--surface2);padding:8px 12px;font-size:11px;font-weight:600;color:var(--muted);text-align:left;white-space:nowrap;position:sticky;left:0;z-index:3;min-width:160px}
+.vg-th-gw{background:var(--surface2);padding:6px 4px;font-size:10px;font-weight:600;color:var(--muted);text-align:center;white-space:nowrap;min-width:38px;cursor:pointer}
+.vg-th-gw:hover{color:var(--text)}
+.vg-td-bv{background:var(--surface);padding:7px 12px;font-size:12px;font-weight:500;white-space:nowrap;position:sticky;left:0;z-index:2;border-right:1px solid var(--border2) !important}
+.vg-cell{width:38px;height:30px;cursor:pointer;text-align:center;vertical-align:middle;transition:opacity .1s;position:relative}
+.vg-cell:hover{opacity:.75}
+.vg-cell-inner{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-size:11px;font-weight:700;line-height:1}
+.vg-cell-hw{font-size:8px;margin-top:1px;opacity:.8;max-width:32px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Checkliste Matrix */
+.clm-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg)}
+.clm-table{border-collapse:collapse;width:max-content}
+.clm-table th,.clm-table td{border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.clm-table th:last-child,.clm-table td:last-child{border-right:none}
+.clm-table tr:last-child td{border-bottom:none}
+.clm-th-bv{background:var(--surface2);padding:8px 12px;font-size:11px;font-weight:600;color:var(--muted);text-align:left;white-space:nowrap;position:sticky;left:0;z-index:4;min-width:170px}
+.clm-phase-hd{padding:5px 6px;font-size:11px;font-weight:600;text-align:center;background:var(--surface2)}
+.clm-th-item{background:var(--surface2);padding:4px 2px 6px;text-align:center;width:32px;min-width:32px;height:150px;vertical-align:bottom;cursor:default;position:relative}
+.clm-th-item span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:11px;color:var(--muted);font-weight:500;white-space:nowrap;display:block;line-height:1.2;max-height:140px;overflow:hidden;text-overflow:ellipsis}
+.clm-td-bv{background:var(--surface);padding:6px 10px;font-size:12px;font-weight:500;white-space:nowrap;position:sticky;left:0;z-index:1;border-right:1px solid var(--border2) !important}
+.clm-cell{width:32px;height:28px;cursor:pointer;text-align:center;vertical-align:middle;position:relative;transition:opacity .1s}
+.clm-cell:hover{opacity:.7}
+.clm-cell-inner{display:flex;align-items:center;justify-content:center;height:100%;font-size:12px;font-weight:700}
+.clm-note-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:#f97316;pointer-events:none}
+/* Tagesplanung */
+.tp-controls{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.tp-kw-nav{display:flex;align-items:center;gap:8px}
+.tp-kw-label{font-size:15px;font-weight:600;min-width:120px;text-align:center}
+.tp-kw-dates{font-size:12px;color:var(--muted)}
+.tp-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-lg)}
+.tp-table{border-collapse:collapse;width:100%;min-width:600px}
+.tp-table th,.tp-table td{border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.tp-table th:last-child,.tp-table td:last-child{border-right:none}
+.tp-table tr:last-child td{border-bottom:none}
+.tp-th-bv{background:var(--surface2);padding:8px 12px;font-size:11px;font-weight:600;color:var(--muted);text-align:left;white-space:nowrap;position:sticky;left:0;min-width:150px;z-index:2}
+.tp-th-day{background:var(--surface2);padding:8px 10px;font-size:11px;font-weight:600;color:var(--muted);text-align:center;min-width:120px}
+.tp-th-day.today{color:var(--accent)}
+.tp-td-bv{background:var(--surface);padding:7px 12px;font-size:12px;font-weight:500;white-space:nowrap;position:sticky;left:0;z-index:1;border-right:1px solid var(--border2) !important}
+.tp-cell{background:var(--bg);padding:0;vertical-align:top}
+.tp-cell-inp{width:100%;height:56px;background:transparent;border:none;color:var(--text);font-family:var(--font);font-size:11px;padding:6px 8px;resize:none;outline:none;line-height:1.4}
+.tp-cell-inp:focus{background:var(--surface2)}
+/* Stammdaten */
+.hk-toolbar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.hk-gw-filter{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.hk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.hk-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px}
+.hk-card-header{display:flex;align-items:flex-start;gap:8px;margin-bottom:10px}
+.hk-firma{font-size:14px;font-weight:600;flex:1}
+.hk-gewerk-badge{font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(88,166,255,.12);color:var(--accent);font-weight:600;white-space:nowrap}
+.hk-field{display:flex;gap:6px;align-items:center;margin-bottom:5px;font-size:12px;color:var(--muted)}
+.hk-field span{font-size:11px;min-width:40px;color:var(--muted)}
+.hk-inp{flex:1;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:12px;padding:2px 4px;outline:none}
+.hk-inp:focus{border-bottom-color:var(--accent)}
+.hk-sel{background:var(--bg);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-family:var(--font);font-size:12px;padding:3px 6px;outline:none}
+.hk-sel:focus{border-color:var(--accent)}
+/* Shared */
+.btn-sm{background:none;border:1px solid var(--border2);color:var(--muted);font-family:var(--font);font-size:11px;padding:4px 10px;border-radius:var(--radius);cursor:pointer;transition:all .12s}
+.btn-sm:hover{color:var(--text);border-color:rgba(255,255,255,.3)}
+.btn-sm.danger:hover{color:#f87171;border-color:#f87171}
 @media print {
-  @page { margin: 15mm 15mm; size: A4; }
-  body { background: #fff !important; color: #111 !important; font-family: Arial, sans-serif !important; font-size:11px !important; }
-  .nav, .filters, .btn-icon, .print-btn, .btn-ghost, .btn-primary, .btn-cancel, .add-task-row, .add-bv-row, .drag-handle, .tm-expand { display:none !important; }
-  .page { padding:0; max-width:100%; }
-  .summary { display:none; }
-  .tm-project { background:#fff !important; border:1px solid #ccc !important; border-radius:4px !important; margin-bottom:10px !important; box-shadow:none !important; break-inside:avoid; }
-  .tm-proj-hd { padding:8px 12px !important; border-bottom:1px solid #ddd; }
-  .tm-proj-name { font-size:13px !important; font-weight:bold !important; color:#111 !important; }
-  .tm-proj-count { color:#666 !important; font-size:10px !important; }
-  .tm-task { break-inside:avoid; }
-  .tm-task-row { padding:5px 12px !important; background:#fff !important; border-bottom:1px solid #eee; }
-  .task-title { color:#111 !important; font-size:11px !important; }
-  .task-title.done { color:#999 !important; }
-  .status-pill { font-size:9px !important; padding:1px 5px !important; border:1px solid #ccc !important; background:#f5f5f5 !important; color:#333 !important; }
-  .assignee-pill { font-size:9px !important; padding:1px 5px !important; background:#f0f0f0 !important; border:1px solid #ddd !important; color:#333 !important; }
-  .print-header { display:block !important; font-size:18px; font-weight:bold; margin-bottom:12px; padding-bottom:8px; border-bottom:2px solid #111; color:#111; }
-  .print-date { display:block !important; font-size:10px; color:#666; margin-bottom:16px; }
+  @page{margin:15mm;size:A4}
+  body{background:#fff!important;color:#111!important;font-family:Arial,sans-serif!important;font-size:11px!important}
+  .nav,.filters,.btn-icon,.print-btn,.btn-ghost,.btn-primary,.btn-cancel,.add-task-row,.add-bv-row,.drag-handle,.tm-expand{display:none!important}
+  .page{padding:0;max-width:100%}
+  .tm-project{background:#fff!important;border:1px solid #ccc!important;border-radius:4px!important;margin-bottom:10px!important;break-inside:avoid}
+  .tm-proj-hd{padding:8px 12px!important;border-bottom:1px solid #ddd}
+  .tm-proj-name{font-size:13px!important;font-weight:bold!important;color:#111!important}
+  .tm-task-row{padding:5px 12px!important;background:#fff!important;border-bottom:1px solid #eee}
+  .task-title{color:#111!important;font-size:11px!important}
+  .task-title.done{color:#999!important}
+  .status-pill{font-size:9px!important;padding:1px 5px!important;border:1px solid #ccc!important;background:#f5f5f5!important;color:#333!important}
+  .assignee-pill{font-size:9px!important;padding:1px 5px!important;background:#f0f0f0!important;border:1px solid #ddd!important;color:#333!important}
+  .print-header{display:block!important;font-size:18px;font-weight:bold;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #111;color:#111}
+  .print-date{display:block!important;font-size:10px;color:#666;margin-bottom:16px}
 }
-.print-header, .print-date { display:none; }
+.print-header,.print-date{display:none}
 `;
 
+
 /* ══════════════════════════════════════════════════════════════
-   COMPONENTS – Jour Fix
+   JOUR FIX COMPONENTS
 ══════════════════════════════════════════════════════════════ */
-function SrcTag({ src }) {
-  if (src === "capmo") return <span className="src-tag src-capmo">Capmo</span>;
-  if (src === "excel") return <span className="src-tag src-excel">Excel</span>;
+function SrcTag({src}) {
+  if (src==="capmo") return <span className="src-tag src-capmo">Capmo</span>;
+  if (src==="excel") return <span className="src-tag src-excel">Excel</span>;
   return <span className="src-tag src-both">Capmo + Excel</span>;
 }
 
-const KIND_CYCLE = ["done", "active", "plan"];
-const KIND_META  = {
-  done:   { label: "Abgeschlossen", color: "#f87171", bg: "rgba(248,113,113,.15)" },
-  active: { label: "Laufend",       color: "#4ade80", bg: "rgba(74,222,128,.15)"  },
-  plan:   { label: "Vorplanung",    color: "#f59e0b", bg: "rgba(245,158,11,.15)"  },
-};
-
-function JFCard({ bv, topics, checks, onToggle, onReset, onDelete, kind, onChangeKind,
-                  onDragStart, onDragEnter, onDragEnd, isDragging, isDragOver }) {
-  const [open, setOpen] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const checked = topics.filter(t => checks[t.id]).length;
-  const pct = Math.round(checked / topics.length * 100);
-  const km = KIND_META[kind];
-  let cls = "jf-card";
-  if (isDragging) cls += " dragging";
-  if (isDragOver) cls += " drag-over";
-  return (
-    <div className={cls} draggable
-      onDragStart={onDragStart} onDragEnter={onDragEnter}
-      onDragEnd={onDragEnd} onDragOver={e => e.preventDefault()}>
-      <div className="jf-header" onClick={() => { if(!confirmDelete) setOpen(o => !o); }}>
-        <span className="drag-handle" title="Verschieben" onClick={e => e.stopPropagation()}>⠿</span>
-        <span className="jf-num">{bv.num}</span>
-        <span className="jf-title">{bv.name}</span>
-        <button
-          onClick={e => { e.stopPropagation(); onChangeKind(); }}
-          style={{fontSize:10, fontWeight:600, padding:"2px 8px", borderRadius:4, border:`1px solid ${km.color}55`,
-                  background:km.bg, color:km.color, cursor:"pointer", whiteSpace:"nowrap", flexShrink:0}}>
-          {km.label} ▸
-        </button>
-        <div className="jf-prog">
-          <div className="jf-bar"><div className="jf-fill" style={{width:`${pct}%`}} /></div>
-          <span className="jf-pct">{checked}/{topics.length}</span>
-        </div>
-        <span className={`jf-chev${open?" open":""}`}>▾</span>
-        {confirmDelete ? (
-          <span style={{display:"flex",alignItems:"center",gap:4,marginLeft:4}} onClick={e=>e.stopPropagation()}>
-            <span style={{fontSize:11,color:"#f87171"}}>Löschen?</span>
-            <button className="btn-icon" style={{color:"#4ade80",fontSize:13}} onClick={e=>{e.stopPropagation();onDelete();}}>✓</button>
-            <button className="btn-icon" style={{fontSize:13}} onClick={e=>{e.stopPropagation();setConfirmDelete(false);}}>✕</button>
-          </span>
-        ) : (
-          <button className="btn-icon" style={{marginLeft:4}} title="BV entfernen"
-            onClick={e=>{e.stopPropagation();setConfirmDelete(true);}}>×</button>
-        )}
-      </div>
-      {open && (
-        <div className="jf-body">
-          {topics.map(t => (
-            <div className="jf-row" key={t.id}>
-              <input type="checkbox" checked={!!checks[t.id]} onChange={e => onToggle(t.id, e.target.checked)} />
-              <div className="jf-row-info">
-                <div className={`jf-row-label${checks[t.id]?" done":""}`}>{t.label}</div>
-                <div className="jf-row-hint"><SrcTag src={t.src} />{t.hint}</div>
-              </div>
-            </div>
-          ))}
-          <div className="jf-footer">
-            <button className="btn-ghost" onClick={onReset}>↺ Zurücksetzen</button>
-            {pct === 100 && <span className="done-badge">✓ Abgehakt</span>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function JourFixView({ jfState, setJfState, saveJF, activeBVs, setActiveBVs, planBVs, setPlanBVs, doneBVs, setDoneBVs, saveBVs }) {
-
-  const dragIdx  = useRef(null);
-  const dragOver = useRef(null);
-  const [draggingId, setDraggingId] = useState(null);
-  const [dragOverId, setDragOverId] = useState(null);
-  const [collapsed, setCollapsed] = useState({ done: false, active: false, plan: false });
-  const [addingKind, setAddingKind] = useState(null);
-  const [newNum,  setNewNum]  = useState("");
-  const [newName, setNewName] = useState("");
-
-  const topicsFor = (kind) => kind==="active" ? JF_TOPICS_ACTIVE : kind==="plan" ? JF_TOPICS_PLAN : JF_TOPICS_DONE;
-  const listFor   = (kind) => kind==="active" ? activeBVs : kind==="plan" ? planBVs : doneBVs;
-  const setListFor= (kind, v) => { if(kind==="active") setActiveBVs(v); else if(kind==="plan") setPlanBVs(v); else setDoneBVs(v); };
-  const saveAll   = (a,p,d) => saveBVs(a,p,d);
-
-  const toggle = (kind, bvId, tid, val) => {
-    const next = { ...jfState, [kind]: { ...jfState[kind], [bvId]: { ...(jfState[kind][bvId]||{}), [tid]: val } } };
-    setJfState(next); saveJF(next);
+function UebersichtBVView({bvList, setBvList, saveBvList}) {
+  const STATUS_ORDER = ['vorplanung','rohbau','ausbau','abgeschlossen'];
+  const STATUS_META_BV = {
+    vorplanung:    {label:'Vorplanung',    color:'#818cf8'},
+    rohbau:        {label:'Rohbau',        color:'#f59e0b'},
+    ausbau:        {label:'Ausbau',        color:'#38bdf8'},
+    abgeschlossen: {label:'Abgeschlossen', color:'#4ade80'},
   };
-  const reset = (kind, bvId) => {
-    const cleared = {}; topicsFor(kind).forEach(t => { cleared[t.id] = false; });
-    const next = { ...jfState, [kind]: { ...jfState[kind], [bvId]: cleared } };
-    setJfState(next); saveJF(next);
+  const STATUS_NEXT = {vorplanung:'rohbau', rohbau:'ausbau', ausbau:'abgeschlossen', abgeschlossen:'vorplanung'};
+  const [collapsed, setCollapsed] = useState({abgeschlossen:true});
+  const [editing, setEditing]     = useState(null);
+  const [editBuf, setEditBuf]     = useState({});
+  const [adding, setAdding]       = useState(null);
+  const [newBuf, setNewBuf]       = useState({num:'',label:'',addr:''});
+
+  const update = (num, patch) => {
+    const next = bvList.map(b => b.num===num ? {...b,...patch} : b);
+    setBvList(next); saveBvList(next);
   };
-  const deleteBV = (kind, bvId) => {
-    const next = { ...jfState }; delete next[kind][bvId];
-    setJfState(next); saveJF(next);
-    const upd = listFor(kind).filter(b=>b.id!==bvId); setListFor(kind, upd);
-    const a=kind==="active"?upd:activeBVs, p=kind==="plan"?upd:planBVs, d=kind==="done"?upd:doneBVs;
-    saveAll(a,p,d);
+  const deleteBV = (num) => {
+    if (!window.confirm('BV wirklich löschen?')) return;
+    const next = bvList.filter(b => b.num!==num);
+    setBvList(next); saveBvList(next);
   };
-
-  /* ── Kategorie wechseln ── */
-  const changeKind = (bvId, fromKind) => {
-    const nextKind = KIND_CYCLE[(KIND_CYCLE.indexOf(fromKind)+1) % KIND_CYCLE.length];
-    const bv = listFor(fromKind).find(b=>b.id===bvId);
-    if (!bv) return;
-
-    // Aus alter Liste entfernen, Checks löschen
-    const oldList = listFor(fromKind).filter(b=>b.id!==bvId);
-    setListFor(fromKind, oldList);
-    const jfNext = { ...jfState };
-    delete jfNext[fromKind][bvId];
-
-    // In neue Liste einfügen, neue Checks anlegen
-    const newChecks = {}; topicsFor(nextKind).forEach(t => { newChecks[t.id]=false; });
-    jfNext[nextKind] = { ...jfNext[nextKind], [bvId]: newChecks };
-    const newList = [...listFor(nextKind), bv];
-    setListFor(nextKind, newList);
-
-    setJfState(jfNext); saveJF(jfNext);
-    const a = fromKind==="active"?oldList : nextKind==="active"?newList : activeBVs;
-    const p = fromKind==="plan"  ?oldList : nextKind==="plan"  ?newList : planBVs;
-    const d = fromKind==="done"  ?oldList : nextKind==="done"  ?newList : doneBVs;
-    saveAll(a,p,d);
+  const addBV = (status) => {
+    if (!newBuf.label.trim()) return;
+    const bv = {num: newBuf.num.trim()||('new_'+Date.now()), label: newBuf.label.trim(), addr: newBuf.addr.trim(), status};
+    const next = [...bvList, bv];
+    setBvList(next); saveBvList(next);
+    setNewBuf({num:'',label:'',addr:''});
+    setAdding(null);
   };
+  const commitEdit = (num) => { update(num, editBuf); setEditing(null); };
 
-  const addBV = (kind) => {
-    if (!newName.trim()) return;
-    const bv = { id: uid(), num: newNum.trim()||"–", name: newName.trim() };
-    const checks = {}; topicsFor(kind).forEach(t => { checks[t.id]=false; });
-    const nextJF = { ...jfState, [kind]: { ...jfState[kind], [bv.id]: checks } };
-    setJfState(nextJF); saveJF(nextJF);
-    const upd = [...listFor(kind), bv]; setListFor(kind, upd);
-    const a=kind==="active"?upd:activeBVs, p=kind==="plan"?upd:planBVs, d=kind==="done"?upd:doneBVs;
-    saveAll(a,p,d);
-    setNewNum(""); setNewName(""); setAddingKind(null);
-  };
+  const counts = {};
+  STATUS_ORDER.forEach(s => { counts[s] = bvList.filter(b=>b.status===s).length; });
 
-  /* ── Drag (innerhalb einer Sektion) ── */
-  const mkDrag = (kind) => ({
-    start: (idx,id) => { dragIdx.current=idx; setDraggingId(id); },
-    enter: (idx,id) => { dragOver.current=idx; setDragOverId(id); },
-    end: () => {
-      const from=dragIdx.current, to=dragOver.current;
-      if (from!==null && to!==null && from!==to) {
-        const next=[...listFor(kind)]; const [m]=next.splice(from,1); next.splice(to,0,m);
-        setListFor(kind, next);
-        const a=kind==="active"?next:activeBVs, p=kind==="plan"?next:planBVs, d=kind==="done"?next:doneBVs;
-        saveAll(a,p,d);
-      }
-      dragIdx.current=null; dragOver.current=null; setDraggingId(null); setDragOverId(null);
-    }
-  });
-
-  const totalAll = activeBVs.length*JF_TOPICS_ACTIVE.length + planBVs.length*JF_TOPICS_PLAN.length + doneBVs.length*JF_TOPICS_DONE.length;
-  const totalChecked = ["active","plan","done"].reduce((s,k) =>
-    s + listFor(k).reduce((s2,bv) => s2 + topicsFor(k).filter(t=>jfState[k]?.[bv.id]?.[t.id]).length, 0), 0);
-
-  const renderSection = (kind) => {
-    const list = listFor(kind);
-    const topics = topicsFor(kind);
-    const km = KIND_META[kind];
-    const drag = mkDrag(kind);
-    const doneCount = list.filter(bv => topics.every(t => jfState[kind]?.[bv.id]?.[t.id])).length;
-    const isCollapsed = collapsed[kind];
-
-    return (
-      <div key={kind} style={{marginTop: kind==="done" ? 0 : 24}}>
-        {/* Sektion-Header */}
-        <div
-          onClick={() => setCollapsed(c => ({...c, [kind]: !c[kind]}))}
-          style={{display:"flex", alignItems:"center", gap:8, cursor:"pointer",
-                  padding:"8px 12px", borderRadius:"var(--radius-lg)",
-                  background:"var(--surface)", border:"1px solid var(--border)",
-                  marginBottom: isCollapsed ? 0 : 10, userSelect:"none"}}>
-          <span style={{fontSize:16, color:km.color, transition:"transform .2s",
-                        display:"inline-block", transform: isCollapsed?"rotate(-90deg)":"rotate(0deg)"}}>▾</span>
-          <span style={{fontSize:13, fontWeight:600, color:km.color, flex:1}}>{km.label}</span>
-          <span style={{fontSize:11, color:"var(--muted)", fontFamily:"var(--mono)"}}>
-            {list.length} BV
-          </span>
-        </div>
-
-        {!isCollapsed && (
-          <>
-            {list.map((bv,i) => (
-              <JFCard key={bv.id} bv={bv} topics={topics} kind={kind}
-                checks={jfState[kind]?.[bv.id] || {}}
-                onToggle={(tid,val) => toggle(kind, bv.id, tid, val)}
-                onReset={() => reset(kind, bv.id)}
-                onDelete={() => deleteBV(kind, bv.id)}
-                onChangeKind={() => changeKind(bv.id, kind)}
-                isDragging={draggingId===bv.id}
-                isDragOver={dragOverId===bv.id && draggingId!==bv.id}
-                onDragStart={() => drag.start(i, bv.id)}
-                onDragEnter={() => drag.enter(i, bv.id)}
-                onDragEnd={drag.end}
-              />
-            ))}
-            {list.length===0 && (
-              <div style={{padding:"14px 16px", fontSize:12, color:"var(--muted)",
-                           background:"var(--surface)", border:"1px solid var(--border)",
-                           borderRadius:"var(--radius-lg)", marginBottom:8}}>
-                Keine BV in dieser Kategorie.
-              </div>
-            )}
-            {addingKind===kind ? (
-              <div className="add-bv-row">
-                <input className="add-bv-inp" style={{maxWidth:80}} placeholder="Nr." value={newNum} onChange={e=>setNewNum(e.target.value)} />
-                <input className="add-bv-inp" placeholder="BV Name…" value={newName}
-                  onChange={e=>setNewName(e.target.value)}
-                  onKeyDown={e=>{ if(e.key==="Enter") addBV(kind); if(e.key==="Escape"){ setAddingKind(null); setNewNum(""); setNewName(""); }}}
-                  autoFocus />
-                <button className="btn-primary" onClick={()=>addBV(kind)}>Hinzufügen</button>
-                <button className="btn-cancel" onClick={()=>{ setAddingKind(null); setNewNum(""); setNewName(""); }}>Abbrechen</button>
-              </div>
-            ) : (
-              <button style={{marginTop:4, background:"none", border:`1px solid ${km.color}44`,
-                              color:km.color, fontFamily:"var(--font)", fontSize:12, fontWeight:600,
-                              padding:"5px 14px", borderRadius:"var(--radius)", cursor:"pointer"}}
-                onClick={()=>setAddingKind(kind)}>+ BV hinzufügen</button>
-            )}
-          </>
-        )}
-      </div>
-    );
-  };
+  const inpStyle = {flex:'1 1 120px',background:'var(--bg)',border:'1px solid var(--border2)',borderRadius:'var(--radius)',color:'var(--text)',fontFamily:'var(--font)',fontSize:12,padding:'5px 8px',outline:'none'};
 
   return (
     <div className="page">
       <div className="summary">
-        <div className="sum-card"><div className="sum-val" style={{color:"#f87171"}}>{doneBVs.length}</div><div className="sum-label">Abgeschlossen</div></div>
-        <div className="sum-card"><div className="sum-val" style={{color:"#4ade80"}}>{activeBVs.length}</div><div className="sum-label">Laufend</div></div>
-        <div className="sum-card"><div className="sum-val" style={{color:"#f59e0b"}}>{planBVs.length}</div><div className="sum-label">Vorplanung</div></div>
-        <div className="sum-card"><div className="sum-val">{doneBVs.length + activeBVs.length + planBVs.length}</div><div className="sum-label">BV gesamt</div></div>
+        {STATUS_ORDER.map(s => (
+          <div key={s} className="sum-card">
+            <div className="sum-val" style={{color:STATUS_META_BV[s].color}}>{counts[s]}</div>
+            <div className="sum-label">{STATUS_META_BV[s].label}</div>
+          </div>
+        ))}
+        <div className="sum-card">
+          <div className="sum-val">{bvList.length}</div>
+          <div className="sum-label">BV gesamt</div>
+        </div>
       </div>
-      {renderSection("done")}
-      {renderSection("active")}
-      {renderSection("plan")}
+
+      {STATUS_ORDER.map(status => {
+        const meta = STATUS_META_BV[status];
+        const list = bvList.filter(b=>b.status===status);
+        const isCollapsed = !!collapsed[status];
+        return (
+          <div key={status} style={{marginBottom:12}}>
+            <div onClick={()=>setCollapsed(c=>({...c,[status]:!c[status]}))}
+              style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'8px 12px',
+                borderRadius:'var(--radius-lg)',background:'var(--surface)',border:'1px solid var(--border)',
+                marginBottom:isCollapsed?0:8,userSelect:'none'}}>
+              <span style={{fontSize:16,color:meta.color,display:'inline-block',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',transition:'transform .2s'}}>▾</span>
+              <span style={{fontSize:13,fontWeight:600,color:meta.color,flex:1}}>{meta.label}</span>
+              <span style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)'}}>{list.length} BV</span>
+            </div>
+
+            {!isCollapsed && (
+              <div>
+                {list.map(bv => editing===bv.num ? (
+                  <div key={bv.num} style={{background:'var(--surface)',border:'1px solid var(--accent)',borderRadius:'var(--radius-lg)',padding:'12px 14px',marginBottom:6,display:'flex',flexWrap:'wrap',gap:8,alignItems:'flex-end'}}>
+                    <input placeholder="Name" value={editBuf.label||''} onChange={e=>setEditBuf(b=>({...b,label:e.target.value}))} style={{...inpStyle,flex:'1 1 120px'}}/>
+                    <input placeholder="Projektnr." value={editBuf.num||''} onChange={e=>setEditBuf(b=>({...b,num:e.target.value}))} style={{...inpStyle,flex:'0 1 90px'}}/>
+                    <input placeholder="Adresse" value={editBuf.addr||''} onChange={e=>setEditBuf(b=>({...b,addr:e.target.value}))} style={{...inpStyle,flex:'2 1 180px'}}/>
+                    <button className="btn-primary" onClick={()=>commitEdit(bv.num)}>✓ OK</button>
+                    <button className="btn-cancel" onClick={()=>setEditing(null)}>Abbrechen</button>
+                  </div>
+                ) : (
+                  <div key={bv.num} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',marginBottom:5}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600,color:'var(--text)',lineHeight:1.3}}>{bv.label}</div>
+                      <div style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)',marginTop:1}}>{bv.num}</div>
+                      {bv.addr && <div style={{fontSize:11,color:'rgba(125,133,144,.8)',marginTop:1}}>{bv.addr}</div>}
+                    </div>
+                    <button title={'→ '+STATUS_META_BV[STATUS_NEXT[status]].label}
+                      onClick={()=>update(bv.num,{status:STATUS_NEXT[status]})}
+                      style={{background:'none',border:'1px solid '+meta.color+'55',color:meta.color,fontSize:11,fontWeight:600,padding:'4px 8px',borderRadius:'var(--radius)',cursor:'pointer',whiteSpace:'nowrap'}}>
+                      → {STATUS_META_BV[STATUS_NEXT[status]].label.split(' ')[0]}
+                    </button>
+                    <button onClick={()=>{setEditBuf({...bv});setEditing(bv.num)}}
+                      style={{background:'none',border:'1px solid var(--border2)',color:'var(--muted)',fontSize:13,padding:'4px 7px',borderRadius:'var(--radius)',cursor:'pointer'}}>✎</button>
+                    <button onClick={()=>deleteBV(bv.num)}
+                      style={{background:'none',border:'1px solid rgba(248,113,113,.3)',color:'#f87171',fontSize:13,padding:'4px 7px',borderRadius:'var(--radius)',cursor:'pointer'}}>×</button>
+                  </div>
+                ))}
+
+                {list.length===0 && (
+                  <div style={{padding:'12px 14px',fontSize:12,color:'var(--muted)',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',marginBottom:6}}>
+                    Keine BV in dieser Kategorie.
+                  </div>
+                )}
+
+                {adding===status ? (
+                  <div style={{background:'var(--surface)',border:'1px dashed var(--accent)',borderRadius:'var(--radius-lg)',padding:'12px 14px',marginTop:4,display:'flex',flexWrap:'wrap',gap:8,alignItems:'flex-end'}}>
+                    <input placeholder="Name *" value={newBuf.label} autoFocus onChange={e=>setNewBuf(b=>({...b,label:e.target.value}))}
+                      onKeyDown={e=>{if(e.key==='Enter')addBV(status);if(e.key==='Escape')setAdding(null)}}
+                      style={{...inpStyle,flex:'1 1 120px'}}/>
+                    <input placeholder="Projektnr." value={newBuf.num} onChange={e=>setNewBuf(b=>({...b,num:e.target.value}))} style={{...inpStyle,flex:'0 1 90px'}}/>
+                    <input placeholder="Adresse" value={newBuf.addr} onChange={e=>setNewBuf(b=>({...b,addr:e.target.value}))} style={{...inpStyle,flex:'2 1 180px'}}/>
+                    <button className="btn-primary" onClick={()=>addBV(status)}>Hinzufügen</button>
+                    <button className="btn-cancel" onClick={()=>setAdding(null)}>Abbrechen</button>
+                  </div>
+                ) : (
+                  <button onClick={()=>setAdding(status)}
+                    style={{marginTop:4,background:'none',border:'1px solid '+meta.color+'44',color:meta.color,fontFamily:'var(--font)',fontSize:12,fontWeight:600,padding:'5px 14px',borderRadius:'var(--radius)',cursor:'pointer'}}>
+                    + BV hinzufügen
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
+
 /* ══════════════════════════════════════════════════════════════
-   COMPONENTS – Task Manager
+   TASK MANAGER
 ══════════════════════════════════════════════════════════════ */
-function TaskRow({ task, onPatch, onDelete, onCycleSt, onCycleAss, onAddSub, onPatchSub, onDelSub }) {
-  const sm = STATUS_META[task.status] || STATUS_META.offen;
-  const [newSub, setNewSub] = useState("");
-  const [editing, setEditing] = useState(false);
-  const [editVal, setEditVal] = useState(task.title);
-
-  const commitEdit = () => {
-    if (editVal.trim()) onPatch({ title: editVal.trim() });
-    else setEditVal(task.title);
-    setEditing(false);
-  };
-
+function TaskRow({task,onPatch,onDelete,onCycleSt,onCycleAss,onAddSub,onPatchSub,onDelSub}) {
+  const sm=STATUS_META[task.status]||STATUS_META.offen;
+  const [newSub,setNewSub]=useState("");
+  const [editing,setEditing]=useState(false);
+  const [editVal,setEditVal]=useState(task.title);
+  const commitEdit=()=>{if(editVal.trim())onPatch({title:editVal.trim()});else setEditVal(task.title);setEditing(false)};
   return (
     <div className="tm-task">
       <div className="tm-task-row">
-        <button className="status-pill" style={{color:sm.color,background:sm.bg,borderColor:sm.border}}
-          onClick={() => onCycleSt(task.status)}>{sm.label}</button>
-        {editing ? (
-          <input
-            className="add-task-inp"
-            style={{flex:1, fontSize:13, padding:"3px 8px"}}
-            value={editVal}
-            onChange={e => setEditVal(e.target.value)}
-            onKeyDown={e => { if(e.key==="Enter") commitEdit(); if(e.key==="Escape"){ setEditVal(task.title); setEditing(false); }}}
-            onBlur={commitEdit}
-            autoFocus
-          />
-        ) : (
-          <span className={`task-title${task.status==="erledigt"?" done":""}`}
-            onClick={() => onPatch({expanded:!task.expanded})}>{task.title}</span>
+        <button className="status-pill" style={{color:sm.color,background:sm.bg,borderColor:sm.border}} onClick={()=>onCycleSt(task.status)}>{sm.label}</button>
+        {editing?(
+          <input className="add-task-inp" style={{flex:1,fontSize:13,padding:"3px 8px"}} value={editVal}
+            onChange={e=>setEditVal(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter")commitEdit();if(e.key==="Escape"){setEditVal(task.title);setEditing(false)}}}
+            onBlur={commitEdit} autoFocus/>
+        ):(
+          <span className={`task-title${task.status==="erledigt"?" done":""}`} onClick={()=>onPatch({expanded:!task.expanded})}>{task.title}</span>
         )}
-        <button className="btn-icon" title="Bearbeiten"
-          onClick={() => { setEditVal(task.title); setEditing(e => !e); }}
-          style={{fontSize:13, opacity: editing ? 1 : 0.6}}>✎</button>
-        <button className="assignee-pill" onClick={() => onCycleAss(task.assignee)}>{task.assignee}</button>
-        <button className="btn-icon" onClick={onDelete} title="Löschen">×</button>
+        <button className="btn-icon" onClick={()=>{setEditVal(task.title);setEditing(e=>!e)}} style={{fontSize:13,opacity:editing?1:0.6}}>✎</button>
+        <button className="assignee-pill" onClick={()=>onCycleAss(task.assignee)}>{task.assignee}</button>
+        <button className="btn-icon" onClick={onDelete}>×</button>
       </div>
       {task.expanded && (
         <div className="tm-expand">
-          <textarea className="note-inp" rows={2}
-            placeholder="Notiz, z.B. Warte auf Angebot KW 23"
-            value={task.note}
-            onChange={e => onPatch({note:e.target.value})}
-          />
-          {task.subtasks.length > 0 && (
+          <textarea className="note-inp" rows={2} placeholder="Notiz…" value={task.note} onChange={e=>onPatch({note:e.target.value})}/>
+          {task.subtasks.length>0 && (
             <div className="subs">
-              {task.subtasks.map(s => (
+              {task.subtasks.map(s=>(
                 <div className="sub-row" key={s.id}>
-                  <input type="checkbox" checked={s.done} onChange={e => onPatchSub(s.id,{done:e.target.checked})} />
+                  <input type="checkbox" checked={s.done} onChange={e=>onPatchSub(s.id,{done:e.target.checked})}/>
                   <span className={`sub-title${s.done?" done":""}`}>{s.title}</span>
-                  <button className="btn-icon" style={{fontSize:12}} onClick={() => onDelSub(s.id)}>×</button>
+                  <button className="btn-icon" style={{fontSize:12}} onClick={()=>onDelSub(s.id)}>×</button>
                 </div>
               ))}
             </div>
           )}
           <div className="sub-actions">
             <input className="add-task-inp" style={{fontSize:12,padding:"4px 8px"}} placeholder="Unterpunkt…"
-              value={newSub} onChange={e => setNewSub(e.target.value)}
-              onKeyDown={e => { if(e.key==="Enter"&&newSub.trim()){ onAddSub(newSub.trim()); setNewSub(""); }}}
-            />
-            <button className="btn-primary" style={{fontSize:11,padding:"4px 10px"}}
-              onClick={() => { if(newSub.trim()){ onAddSub(newSub.trim()); setNewSub(""); }}}>+ Sub</button>
+              value={newSub} onChange={e=>setNewSub(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"&&newSub.trim()){onAddSub(newSub.trim());setNewSub("")}}}/>
+            <button className="btn-primary" style={{fontSize:11,padding:"4px 10px"}} onClick={()=>{if(newSub.trim()){onAddSub(newSub.trim());setNewSub("")}}}>+ Sub</button>
           </div>
         </div>
       )}
@@ -1166,455 +747,825 @@ function TaskRow({ task, onPatch, onDelete, onCycleSt, onCycleAss, onAddSub, onP
   );
 }
 
-function ProjectCard({ project, filterAss, filterSt, onUpdate, onDelete, isDragging, isDragOver, dragHandleProps, onDragEnter, onDragEnd }) {
-  const [addingTask, setAddingTask] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
-
-  const patch = (tid, p) => onUpdate({ ...project, tasks: project.tasks.map(t => t.id===tid?{...t,...p}:t) });
-  const cycleSt  = (tid, cur) => { const i=STATUS_CYCLE.indexOf(cur);   patch(tid,{status:STATUS_CYCLE[(i+1)%STATUS_CYCLE.length]}); };
-  const cycleAss = (tid, cur) => { const i=ASSIGNEE_CYCLE.indexOf(cur); patch(tid,{assignee:ASSIGNEE_CYCLE[(i+1)%ASSIGNEE_CYCLE.length]}); };
-  const delTask  = tid => onUpdate({ ...project, tasks: project.tasks.filter(t => t.id!==tid) });
-  const addTask  = () => {
-    if (!newTitle.trim()) return;
-    onUpdate({ ...project, tasks:[...project.tasks, mkTask(newTitle.trim())] });
-    setNewTitle(""); setAddingTask(false);
-  };
-  const addSub   = (tid, title) => patch(tid,{subtasks:[...(project.tasks.find(t=>t.id===tid)?.subtasks||[]),{id:uid(),title,done:false}]});
-  const patchSub = (tid, sid, p) => patch(tid,{subtasks:project.tasks.find(t=>t.id===tid)?.subtasks.map(s=>s.id===sid?{...s,...p}:s)||[]});
-  const delSub   = (tid, sid) => patch(tid,{subtasks:project.tasks.find(t=>t.id===tid)?.subtasks.filter(s=>s.id!==sid)||[]});
-
-  const visible = project.tasks.filter(t =>
-    (filterAss.length===0 || filterAss.includes("Alle") || filterAss.includes(t.assignee)) &&
-    (filterSt.length===0  || filterSt.includes("Alle")  || filterSt.includes(t.status))
-  );
-
-  let cardClass = "tm-project";
-  if (isDragging)  cardClass += " dragging";
-  if (isDragOver)  cardClass += " drag-over";
-
+function ProjectCard({project,filterAss,filterSt,onUpdate,onDelete,isDragging,isDragOver,dragHandleProps,onDragEnter,onDragEnd}) {
+  const [addingTask,setAddingTask]=useState(false);
+  const [newTitle,setNewTitle]=useState("");
+  const patch=(tid,p)=>onUpdate({...project,tasks:project.tasks.map(t=>t.id===tid?{...t,...p}:t)});
+  const cycleSt=(tid,cur)=>{const i=STATUS_CYCLE.indexOf(cur);patch(tid,{status:STATUS_CYCLE[(i+1)%STATUS_CYCLE.length]})};
+  const cycleAss=(tid,cur)=>{const i=ASSIGNEE_CYCLE.indexOf(cur);patch(tid,{assignee:ASSIGNEE_CYCLE[(i+1)%ASSIGNEE_CYCLE.length]})};
+  const visible=project.tasks.filter(t=>(filterAss.length===0||filterAss.includes("Alle")||filterAss.includes(t.assignee))&&(filterSt.length===0||filterSt.includes("Alle")||filterSt.includes(t.status)));
+  let cardClass="tm-project";
+  if(isDragging)cardClass+=" dragging";
+  if(isDragOver)cardClass+=" drag-over";
   return (
     <div className={cardClass} onDragEnter={onDragEnter} onDragEnd={onDragEnd} onDragOver={e=>e.preventDefault()}>
       <div className="tm-proj-hd">
-        <span className="drag-handle" title="Verschieben" {...dragHandleProps}>⠿</span>
+        <span className="drag-handle" {...dragHandleProps}>⠿</span>
         <span className="tm-proj-name">{project.name}</span>
         <span className="tm-proj-count">{project.tasks.length} Tasks</span>
-        <button className="btn-icon" onClick={() => setAddingTask(a=>!a)} title="Task hinzufügen">+</button>
-        <button className="btn-icon" onClick={onDelete} title="Projekt löschen">×</button>
+        <button className="btn-icon" onClick={()=>setAddingTask(a=>!a)}>+</button>
+        <button className="btn-icon" onClick={onDelete}>×</button>
       </div>
-      {visible.map(task => (
+      {visible.map(task=>(
         <TaskRow key={task.id} task={task}
-          onPatch={p => patch(task.id,p)}
-          onDelete={() => delTask(task.id)}
-          onCycleSt={cur => cycleSt(task.id,cur)}
-          onCycleAss={cur => cycleAss(task.id,cur)}
-          onAddSub={title => addSub(task.id,title)}
-          onPatchSub={(sid,p) => patchSub(task.id,sid,p)}
-          onDelSub={sid => delSub(task.id,sid)}
+          onPatch={p=>patch(task.id,p)} onDelete={()=>onUpdate({...project,tasks:project.tasks.filter(t=>t.id!==task.id)})}
+          onCycleSt={cur=>cycleSt(task.id,cur)} onCycleAss={cur=>cycleAss(task.id,cur)}
+          onAddSub={title=>patch(task.id,{subtasks:[...(project.tasks.find(t=>t.id===task.id)?.subtasks||[]),{id:uid(),title,done:false}]})}
+          onPatchSub={(sid,p)=>patch(task.id,{subtasks:project.tasks.find(t=>t.id===task.id)?.subtasks.map(s=>s.id===sid?{...s,...p}:s)||[]})}
+          onDelSub={sid=>patch(task.id,{subtasks:project.tasks.find(t=>t.id===task.id)?.subtasks.filter(s=>s.id!==sid)||[]})}
         />
       ))}
-      {visible.length===0 && project.tasks.length>0 && (
-        <div style={{padding:"10px 16px",fontSize:12,color:"var(--muted)"}}>Keine Tasks für diesen Filter.</div>
-      )}
+      {visible.length===0&&project.tasks.length>0 && <div style={{padding:"10px 16px",fontSize:12,color:"var(--muted)"}}>Keine Tasks für diesen Filter.</div>}
       {addingTask && (
         <div className="add-task-row">
           <input className="add-task-inp" placeholder="Neue Aufgabe…" value={newTitle}
             onChange={e=>setNewTitle(e.target.value)}
-            onKeyDown={e=>{ if(e.key==="Enter") addTask(); if(e.key==="Escape"){ setAddingTask(false); setNewTitle(""); }}}
-            autoFocus
-          />
-          <button className="btn-primary" onClick={addTask}>Hinzufügen</button>
-          <button className="btn-cancel" onClick={() => { setAddingTask(false); setNewTitle(""); }}>Abbrechen</button>
+            onKeyDown={e=>{if(e.key==="Enter"&&newTitle.trim()){onUpdate({...project,tasks:[...project.tasks,mkTask(newTitle.trim())]});setNewTitle("");setAddingTask(false)}if(e.key==="Escape"){setAddingTask(false);setNewTitle("")}}}
+            autoFocus/>
+          <button className="btn-primary" onClick={()=>{if(newTitle.trim()){onUpdate({...project,tasks:[...project.tasks,mkTask(newTitle.trim())]});setNewTitle("");setAddingTask(false)}}}>Hinzufügen</button>
+          <button className="btn-cancel" onClick={()=>{setAddingTask(false);setNewTitle("")}}>Abbrechen</button>
         </div>
       )}
     </div>
   );
 }
 
-function TaskManagerView({ projects, setProjects, saveProjects }) {
-  const [filterAss, setFilterAss] = useState(["Alle"]);
-  const [filterSt,  setFilterSt]  = useState(["Alle"]);
-  const [addingBV,  setAddingBV]  = useState(false);
-  const [newBVName, setNewBVName] = useState("");
-
-  // Drag state
-  const [orderedProjects, setOrderedProjects] = useState(projects);
-  useEffect(() => { setOrderedProjects(projects); }, [projects]);
-
-  const dragIdx     = useRef(null);
-  const dragOverIdx = useRef(null);
-  const touchTimer  = useRef(null);
-  const touchDragging = useRef(false);
-  const [draggingId, setDraggingId] = useState(null);
-  const [dragOverId, setDragOverId] = useState(null);
-
-  const update = p => { setProjects(p); setOrderedProjects(p); saveProjects(p); };
-
-  const addProject = () => {
-    if (!newBVName.trim()) return;
-    update([...orderedProjects, {id:uid(), name:newBVName.trim(), tasks:[]}]);
-    setNewBVName(""); setAddingBV(false);
-  };
-
-  /* ── Multi-select filter toggle ── */
-  const toggleFilter = (arr, setArr, val) => {
-    if (val === "Alle") { setArr(["Alle"]); return; }
-    const without = arr.filter(x => x !== "Alle" && x !== val);
-    const has = arr.includes(val);
-    const next = has ? (without.length ? without : ["Alle"]) : [...without, val];
-    setArr(next.length ? next : ["Alle"]);
-  };
-
-  /* ── Desktop Drag ── */
-  const handleDragStart = (idx, id) => { dragIdx.current=idx; setDraggingId(id); };
-  const handleDragEnter = (idx, id) => {
-    if (dragIdx.current===null || idx===dragIdx.current) return;
-    dragOverIdx.current = idx;
-    setDragOverId(id);
-    // Live reorder preview
-    const next = [...orderedProjects];
-    const [moved] = next.splice(dragIdx.current, 1);
-    next.splice(idx, 0, moved);
-    dragIdx.current = idx;
-    setOrderedProjects(next);
-  };
-  const handleDragEnd = () => {
-    if (orderedProjects !== projects) update(orderedProjects);
-    dragIdx.current=null; dragOverIdx.current=null; setDraggingId(null); setDragOverId(null);
-  };
-
-  /* ── Touch Drag (long press) ── */
-  const makeTouchHandlers = (idx, id) => ({
-    onTouchStart: (e) => {
-      touchTimer.current = setTimeout(() => {
-        touchDragging.current = true;
-        dragIdx.current = idx;
-        setDraggingId(id);
-        navigator.vibrate && navigator.vibrate(40);
-      }, 400);
-    },
-    onTouchMove: (e) => {
-      if (!touchDragging.current) { clearTimeout(touchTimer.current); return; }
-      e.preventDefault();
-      const touch = e.touches[0];
-      const el = document.elementFromPoint(touch.clientX, touch.clientY);
-      const card = el?.closest(".tm-project");
-      if (!card) return;
-      const allCards = [...document.querySelectorAll(".tm-project")];
-      const toIdx = allCards.indexOf(card);
-      if (toIdx !== -1 && toIdx !== dragIdx.current) {
-        const next = [...orderedProjects];
-        const [moved] = next.splice(dragIdx.current, 1);
-        next.splice(toIdx, 0, moved);
-        dragIdx.current = toIdx;
-        setDragOverId(orderedProjects[toIdx]?.id);
-        setOrderedProjects(next);
-      }
-    },
-    onTouchEnd: () => {
-      clearTimeout(touchTimer.current);
-      if (touchDragging.current) { update(orderedProjects); }
-      touchDragging.current = false;
-      dragIdx.current=null; setDraggingId(null); setDragOverId(null);
-    },
+function TaskManagerView({projects,setProjects,saveProjects}) {
+  const [filterAss,setFilterAss]=useState(["Alle"]);
+  const [filterSt,setFilterSt]=useState(["Alle"]);
+  const [addingBV,setAddingBV]=useState(false);
+  const [newBVName,setNewBVName]=useState("");
+  const [orderedProjects,setOrderedProjects]=useState(projects);
+  useEffect(()=>{setOrderedProjects(projects)},[projects]);
+  const dragIdx=useRef(null),dragOverIdx=useRef(null),touchTimer=useRef(null),touchDragging=useRef(false);
+  const [draggingId,setDraggingId]=useState(null),[dragOverId,setDragOverId]=useState(null);
+  const update=p=>{setProjects(p);setOrderedProjects(p);saveProjects(p)};
+  const toggleFilter=(arr,setArr,val)=>{if(val==="Alle"){setArr(["Alle"]);return}const without=arr.filter(x=>x!=="Alle"&&x!==val);const has=arr.includes(val);const next=has?(without.length?without:["Alle"]):[...without,val];setArr(next.length?next:["Alle"])};
+  const handleDragStart=(idx,id)=>{dragIdx.current=idx;setDraggingId(id)};
+  const handleDragEnter=(idx,id)=>{if(dragIdx.current===null||idx===dragIdx.current)return;const next=[...orderedProjects];const[moved]=next.splice(dragIdx.current,1);next.splice(idx,0,moved);dragIdx.current=idx;setDragOverId(id);setOrderedProjects(next)};
+  const handleDragEnd=()=>{if(orderedProjects!==projects)update(orderedProjects);dragIdx.current=null;dragOverIdx.current=null;setDraggingId(null);setDragOverId(null)};
+  const makeTouchHandlers=(idx,id)=>({
+    onTouchStart:(e)=>{touchTimer.current=setTimeout(()=>{touchDragging.current=true;dragIdx.current=idx;setDraggingId(id);navigator.vibrate&&navigator.vibrate(40)},400)},
+    onTouchMove:(e)=>{if(!touchDragging.current){clearTimeout(touchTimer.current);return}e.preventDefault();const t=e.touches[0];const el=document.elementFromPoint(t.clientX,t.clientY);const card=el?.closest(".tm-project");if(!card)return;const all=[...document.querySelectorAll(".tm-project")];const toIdx=all.indexOf(card);if(toIdx!==-1&&toIdx!==dragIdx.current){const next=[...orderedProjects];const[moved]=next.splice(dragIdx.current,1);next.splice(toIdx,0,moved);dragIdx.current=toIdx;setDragOverId(orderedProjects[toIdx]?.id);setOrderedProjects(next)}},
+    onTouchEnd:()=>{clearTimeout(touchTimer.current);if(touchDragging.current)update(orderedProjects);touchDragging.current=false;dragIdx.current=null;setDraggingId(null);setDragOverId(null)},
   });
-
-  const openCount = orderedProjects.reduce((s,p) => s + p.tasks.filter(t=>t.status!=="erledigt").length, 0);
-  const waitCount = orderedProjects.reduce((s,p) => s + p.tasks.filter(t=>t.status==="wartend").length, 0);
-  const doneCount = orderedProjects.reduce((s,p) => s + p.tasks.filter(t=>t.status==="erledigt").length, 0);
-
+  const openCount=orderedProjects.reduce((s,p)=>s+p.tasks.filter(t=>t.status!=="erledigt").length,0);
+  const waitCount=orderedProjects.reduce((s,p)=>s+p.tasks.filter(t=>t.status==="wartend").length,0);
+  const doneCount=orderedProjects.reduce((s,p)=>s+p.tasks.filter(t=>t.status==="erledigt").length,0);
   return (
     <div className="page" id="print-area">
       <div className="print-header">Aufgabenliste – BV-Manager</div>
-      <div className="print-date">Erstellt: {new Date().toLocaleDateString("de-DE", {day:"2-digit",month:"2-digit",year:"numeric"})}</div>
-
+      <div className="print-date">Erstellt: {new Date().toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"})}</div>
       <div className="summary">
         <div className="sum-card"><div className="sum-val">{orderedProjects.length}</div><div className="sum-label">Projekte</div></div>
         <div className="sum-card"><div className="sum-val" style={{color:"#64748b"}}>{openCount}</div><div className="sum-label">Offen</div></div>
         <div className="sum-card"><div className="sum-val" style={{color:"#f59e0b"}}>{waitCount}</div><div className="sum-label">Wartend</div></div>
         <div className="sum-card"><div className="sum-val" style={{color:"#4ade80"}}>{doneCount}</div><div className="sum-label">Erledigt</div></div>
       </div>
-
       <div className="filters">
-        <div className="filter-group">
-          <span>Zuständig:</span>
-          {["Alle","HP","DP","–"].map(a => (
-            <button key={a}
-              className={`f-btn${filterAss.includes(a)?" active":""}`}
-              onClick={() => toggleFilter(filterAss, setFilterAss, a)}>{a}</button>
+        <div className="filter-group"><span>Zuständig:</span>{["Alle","HP","DP","–"].map(a=><button key={a} className={`f-btn${filterAss.includes(a)?" active":""}`} onClick={()=>toggleFilter(filterAss,setFilterAss,a)}>{a}</button>)}</div>
+        <div className="filter-group"><span>Status:</span>{["Alle",...STATUS_CYCLE].map(s=><button key={s} className={`f-btn${filterSt.includes(s)?" active":""}`} onClick={()=>toggleFilter(filterSt,setFilterSt,s)} style={filterSt.includes(s)&&s!=="Alle"?{background:STATUS_META[s]?.color,borderColor:STATUS_META[s]?.color,color:"#0d1117"}:{}}>{s==="Alle"?"Alle":STATUS_META[s].label}</button>)}</div>
+      </div>
+      {orderedProjects.length===0 && <div className="empty">Noch keine Projekte.</div>}
+      {orderedProjects.map((p,idx)=>(
+        <ProjectCard key={p.id} project={p} filterAss={filterAss} filterSt={filterSt}
+          isDragging={draggingId===p.id} isDragOver={dragOverId===p.id&&draggingId!==p.id}
+          dragHandleProps={{draggable:true,onDragStart:(e)=>{e.stopPropagation();handleDragStart(idx,p.id)},...makeTouchHandlers(idx,p.id)}}
+          onUpdate={updated=>update(orderedProjects.map(x=>x.id===p.id?updated:x))}
+          onDelete={()=>update(orderedProjects.filter(x=>x.id!==p.id))}
+          onDragEnter={()=>handleDragEnter(idx,p.id)} onDragEnd={handleDragEnd}/>
+      ))}
+      {addingBV?(
+        <div className="add-bv-row">
+          <input className="add-bv-inp" placeholder="Name des neuen BV…" value={newBVName}
+            onChange={e=>setNewBVName(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter"&&newBVName.trim()){update([...orderedProjects,{id:uid(),name:newBVName.trim(),tasks:[]}]);setNewBVName("");setAddingBV(false)}if(e.key==="Escape"){setAddingBV(false);setNewBVName("")}}}
+            autoFocus/>
+          <button className="btn-primary" onClick={()=>{if(newBVName.trim()){update([...orderedProjects,{id:uid(),name:newBVName.trim(),tasks:[]}]);setNewBVName("");setAddingBV(false)}}}>Erstellen</button>
+          <button className="btn-cancel" onClick={()=>{setAddingBV(false);setNewBVName("")}}>Abbrechen</button>
+        </div>
+      ):(
+        <button className="btn-primary" style={{marginTop:12}} onClick={()=>setAddingBV(true)}>+ Neues BV</button>
+      )}
+    </div>
+  );
+}
+
+
+/* ══════════════════════════════════════════════════════════════
+   VERGABE VIEW
+══════════════════════════════════════════════════════════════ */
+function VgCellPopup({cell,handwerker,cellData,onStatusChange,onHwChange,onClose}) {
+  const cur = cellData || {status:'',hw:''};
+  const gwHW = handwerker.filter(h=>!h.gewerk||h.gewerk===cell.gewerk);
+  const style = {
+    position:'fixed',zIndex:10000,
+    left:Math.min(cell.x+4, window.innerWidth-220),
+    top:Math.min(cell.y+4, window.innerHeight-200),
+    background:'#1c2230',border:'1px solid rgba(255,255,255,.2)',
+    borderRadius:10,padding:14,minWidth:210,
+    boxShadow:'0 8px 32px rgba(0,0,0,.7)',
+  };
+  return (
+    <>
+      <div style={{position:'fixed',inset:0,zIndex:9999}} onClick={onClose}/>
+      <div style={style}>
+        <div style={{fontSize:11,color:'#7d8590',marginBottom:10,fontWeight:600}}>{cell.gewerk}</div>
+        <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+          {VG_CYCLE.map(s=>{
+            const m=VG_META[s];
+            return <button key={s} onClick={()=>{onStatusChange(s);onClose()}}
+              style={{padding:'4px 10px',border:`1px solid ${m.border}`,background:cur.status===s?m.bg:'transparent',
+                      color:m.color,borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700,
+                      boxShadow:cur.status===s?`0 0 0 2px ${m.color}44`:'none'}}>
+              {m.label}
+            </button>;
+          })}
+        </div>
+        <select value={cur.hw||''} onChange={e=>onHwChange(e.target.value)}
+          style={{width:'100%',background:'#0d1117',border:'1px solid rgba(255,255,255,.15)',color:'#e6edf3',borderRadius:6,padding:'5px 8px',fontSize:12,outline:'none'}}>
+          <option value="">— kein Handwerker —</option>
+          {gwHW.map(h=><option key={h.id} value={h.id}>{h.firma}{h.name?` (${h.name})`:''}</option>)}
+        </select>
+        {gwHW.length===0 && <div style={{fontSize:11,color:'#7d8590',marginTop:6}}>Keine Handwerker für dieses Gewerk. Jetzt unter Stammdaten anlegen.</div>}
+      </div>
+    </>
+  );
+}
+
+function VergabeView({vergabeData,setVergabeData,saveVergabe,allBVs,handwerker}) {
+  const [openCell,setOpenCell] = useState(null);
+  const [showDone,setShowDone] = useState(false);
+  const bvList = showDone ? allBVs : allBVs.filter(b=>b.status!=='abgeschlossen');
+
+  const updateCell=(bvNum,gw,field,val)=>{
+    const next={...vergabeData,[bvNum]:{...vergabeData[bvNum],[gw]:{...(vergabeData[bvNum]?.[gw]||{}),[field]:val}}};
+    setVergabeData(next);saveVergabe(next);
+  };
+
+  const hwName=(id)=>{const h=handwerker.find(x=>x.id===id);return h?h.firma.slice(0,6):''};
+
+  // Summary stats
+  const totalCells=bvList.length*GEWERKE.length;
+  const stats={x:0,a:0,'!':0,n:0,'':0};
+  bvList.forEach(bv=>GEWERKE.forEach(g=>{const s=(vergabeData[bv.num]?.[g]?.status)||'';stats[s]=(stats[s]||0)+1}));
+
+  return (
+    <div className="page-wide">
+      {openCell && (
+        <VgCellPopup cell={openCell} handwerker={handwerker}
+          cellData={vergabeData[openCell.bvNum]?.[openCell.gewerk]}
+          onStatusChange={s=>updateCell(openCell.bvNum,openCell.gewerk,'status',s)}
+          onHwChange={id=>updateCell(openCell.bvNum,openCell.gewerk,'hw',id)}
+          onClose={()=>setOpenCell(null)}/>
+      )}
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16,flexWrap:'wrap'}}>
+        <h2 style={{fontSize:15,fontWeight:600,color:'var(--text)',margin:0}}>Vergabe-Übersicht</h2>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',flex:1}}>
+          {[['x','Vergeben','#4ade80'],['a','Angefragt','#f59e0b'],['!','Ausstehend','#f87171'],['n','Entfällt','#475569'],['','Offen','#64748b']].map(([s,l,c])=>(
+            <div key={s} style={{display:'flex',alignItems:'center',gap:5,fontSize:12}}>
+              <span style={{width:12,height:12,borderRadius:3,background:VG_META[s].bg,border:`1px solid ${VG_META[s].border}`,display:'inline-block'}}/>
+              <span style={{color:c,fontWeight:600}}>{stats[s]||0}</span>
+              <span style={{color:'var(--muted)'}}>{l}</span>
+            </div>
           ))}
         </div>
-        <div className="filter-group">
-          <span>Status:</span>
-          {["Alle",...STATUS_CYCLE].map(s => (
-            <button key={s}
-              className={`f-btn${filterSt.includes(s)?" active":""}`}
-              onClick={() => toggleFilter(filterSt, setFilterSt, s)}
-              style={filterSt.includes(s)&&s!=="Alle"?{background:STATUS_META[s]?.color,borderColor:STATUS_META[s]?.color,color:"#0d1117"}:{}}>
-              {s==="Alle"?"Alle":STATUS_META[s].label}
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--muted)',cursor:'pointer'}}>
+          <input type="checkbox" checked={showDone} onChange={e=>setShowDone(e.target.checked)} style={{accentColor:'var(--accent)'}}/>
+          Abgeschlossene anzeigen
+        </label>
+      </div>
+      <div style={{fontSize:11,color:'var(--muted)',marginBottom:8}}>Klick auf Zelle → Status wechseln / Handwerker zuweisen</div>
+      <div className="vg-wrap">
+        <table className="vg-table">
+          <thead>
+            <tr>
+              <th className="vg-th-bv">BV</th>
+              {GEWERKE.map((g,i)=>(
+                <th key={g} className="vg-th-gw" title={g}>{GW_ABBR[i]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bvList.map(bv=>(
+              <tr key={bv.num}>
+                <td className="vg-td-bv">{bv.name}</td>
+                {GEWERKE.map((g,i)=>{
+                  const cell=vergabeData[bv.num]?.[g]||{status:'',hw:''};
+                  const m=VG_META[cell.status||''];
+                  const hwLabel=cell.hw?hwName(cell.hw):'';
+                  return (
+                    <td key={g} className="vg-cell"
+                      style={{background:m.bg,borderBottom:`1px solid var(--border)`}}
+                      onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setOpenCell({bvNum:bv.num,gewerk:g,x:r.left,y:r.bottom})}}>
+                      <div className="vg-cell-inner" style={{color:m.color}}>
+                        <span>{m.label}</span>
+                        {hwLabel && <span className="vg-cell-hw">{hwLabel}</span>}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{marginTop:10,display:'flex',gap:16,flexWrap:'wrap',fontSize:11,color:'var(--muted)'}}>
+        {GEWERKE.map((g,i)=><span key={g}><strong style={{color:'var(--text)'}}>{GW_ABBR[i]}</strong> = {g}</span>)}
+      </div>
+    </div>
+  );
+}
+
+
+/* ══════════════════════════════════════════════════════════════
+   CHECKLISTE VIEW
+══════════════════════════════════════════════════════════════ */
+function ClCellPopup({bvNum,item,cellData,onClose,onSave}) {
+  const initSt = cellData?.st !== undefined ? cellData.st : (cellData?.done ? 'x' : '');
+  const [st,setSt]     = React.useState(initSt);
+  const [date,setDate] = React.useState(cellData?.date||'');
+  const [note,setNote] = React.useState(cellData?.note||'');
+  const save = ()=>{onSave({st,date,note});onClose();};
+
+  const ST_BTNS = [
+    {v:'x',  label:'✓ Erledigt', bg:'rgba(74,222,128,.2)',  color:'#4ade80'},
+    {v:'n',  label:'n/a',        bg:'rgba(71,85,105,.2)',   color:'#94a3b8'},
+    {v:'!',  label:'! Problem',  bg:'rgba(248,113,113,.2)', color:'#f87171'},
+    {v:'',   label:'– Offen',    bg:'rgba(30,41,59,.4)',    color:'#475569'},
+  ];
+
+  return React.createElement(React.Fragment,null,
+    React.createElement('div',{style:{position:'fixed',inset:0,zIndex:900},onClick:onClose}),
+    React.createElement('div',{style:{
+      position:'fixed',top:'50%',left:'50%',transform:'translate(-50%,-50%)',
+      zIndex:901,background:'var(--surface)',border:'1px solid var(--border2)',
+      borderRadius:'var(--radius-lg)',padding:'18px 20px',width:'300px',
+      boxShadow:'0 8px 32px rgba(0,0,0,.6)'
+    }},
+      React.createElement('div',{style:{fontSize:'12px',color:'var(--muted)',marginBottom:'12px',lineHeight:1.4}},item.label),
+      // Status buttons
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px',marginBottom:'12px'}},
+        ST_BTNS.map(b=>React.createElement('button',{
+          key:b.v,
+          onClick:()=>setSt(b.v),
+          style:{
+            padding:'9px 6px',borderRadius:'var(--radius)',cursor:'pointer',
+            background: st===b.v ? b.bg : 'rgba(30,41,59,.3)',
+            color: st===b.v ? b.color : 'var(--muted)',
+            border: st===b.v ? '1px solid '+b.color+'88' : '1px solid var(--border)',
+            fontWeight: st===b.v ? 700 : 400,
+            fontSize:'12px',transition:'all .12s'
+          }
+        },b.label))
+      ),
+      React.createElement('div',{style:{marginBottom:'10px'}},
+        React.createElement('label',{style:{fontSize:'11px',color:'var(--muted)',display:'block',marginBottom:'4px'}},'Datum'),
+        React.createElement('input',{
+          type:'text',placeholder:'TT.MM.JJJJ',value:date,onChange:e=>setDate(e.target.value),
+          style:{width:'100%',boxSizing:'border-box',background:'var(--bg)',
+            border:'1px solid var(--border2)',borderRadius:'var(--radius)',
+            color:'var(--text)',fontFamily:'var(--mono)',fontSize:'12px',padding:'6px 8px',outline:'none'}
+        })
+      ),
+      React.createElement('div',{style:{marginBottom:'14px'}},
+        React.createElement('label',{style:{fontSize:'11px',color:'var(--muted)',display:'block',marginBottom:'4px'}},'Anmerkungen'),
+        React.createElement('textarea',{
+          value:note,onChange:e=>setNote(e.target.value),rows:3,
+          style:{width:'100%',boxSizing:'border-box',background:'var(--bg)',
+            border:'1px solid var(--border2)',borderRadius:'var(--radius)',
+            color:'var(--text)',fontFamily:'var(--font)',fontSize:'12px',
+            padding:'6px 8px',outline:'none',resize:'vertical'}
+        })
+      ),
+      React.createElement('div',{style:{display:'flex',gap:'8px'}},
+        React.createElement('button',{onClick:save,
+          style:{flex:1,padding:'8px',background:'var(--accent)',border:'none',borderRadius:'var(--radius)',
+            color:'#000',fontWeight:700,fontSize:'13px',cursor:'pointer'}},'Speichern'),
+        React.createElement('button',{onClick:onClose,
+          style:{padding:'8px 14px',background:'var(--surface2)',border:'1px solid var(--border2)',
+            borderRadius:'var(--radius)',color:'var(--muted)',fontSize:'13px',cursor:'pointer'}},'Abbrechen')
+      )
+    )
+  );
+}
+
+function ChecklisteView({checklisteData,setChecklisteData,saveCheckliste,allBVs}) {
+  const [openCell,setOpenCell] = React.useState(null);
+
+  const getCellData = (bvNum,itemId)=>(checklisteData[bvNum]||{})[itemId]||null;
+
+  const handleSave = (bvNum,itemId,val)=>{
+    setChecklisteData(prev=>{
+      const next = {...prev,[bvNum]:{...(prev[bvNum]||{}),[itemId]:val}};
+      saveCheckliste(next);
+      return next;
+    });
+  };
+
+  // Build flat item list for popup lookup
+  const allItems = CL_PHASES.flatMap(p=>p.items.map(it=>({...it,phaseColor:p.color})));
+  const getItem = id=>allItems.find(i=>i.id===id)||{id,label:id};
+
+  return React.createElement('div',{style:{padding:'0'}},
+    React.createElement('div',{className:'clm-wrap'},
+      React.createElement('table',{className:'clm-table'},
+        // Header rows
+        React.createElement('thead',null,
+          // Row 1: phase group headers
+          React.createElement('tr',null,
+            React.createElement('th',{className:'clm-th-bv',rowSpan:2,style:{zIndex:5}},'Bauvorhaben'),
+            CL_PHASES.map(p=>
+              React.createElement('th',{
+                key:p.id,
+                className:'clm-phase-hd',
+                colSpan:p.items.length,
+                style:{borderBottom:'2px solid '+p.color,color:p.color}
+              },p.label)
+            )
+          ),
+          // Row 2: rotated item headers
+          React.createElement('tr',null,
+            CL_PHASES.flatMap(p=>p.items.map(it=>
+              React.createElement('th',{key:it.id,className:'clm-th-item',title:it.label},
+                React.createElement('span',null,it.label)
+              )
+            ))
+          )
+        ),
+        // Body rows
+        React.createElement('tbody',null,
+          allBVs.map(bv=>{
+            const bvData = checklisteData[bv.num]||{};
+            const total = allItems.length;
+            const done = Object.values(bvData).filter(v=>v&&(v.st==='x'||v.done)).length;
+            const pct = total>0?Math.round(done/total*100):0;
+            return React.createElement('tr',{key:bv.num},
+              React.createElement('td',{className:'clm-td-bv'},
+                React.createElement('div',null,bv.label),
+                React.createElement('div',{style:{
+                  marginTop:'3px',height:'3px',background:'var(--border)',borderRadius:'2px',overflow:'hidden'
+                }},
+                  React.createElement('div',{style:{
+                    height:'100%',borderRadius:'2px',background:'#4ade80',
+                    width:pct+'%',transition:'width .3s'
+                  }})
+                )
+              ),
+              CL_PHASES.flatMap(p=>p.items.map(it=>{
+                const d = bvData[it.id]||null;
+                const st = d?.st !== undefined ? d.st : (d?.done ? 'x' : '');
+                const hasNote = d&&d.note&&d.note.trim().length>0;
+                const cellBg = st==='x'?'rgba(74,222,128,.15)':st==='!'?'rgba(248,113,113,.13)':st==='n'?'rgba(30,41,59,.4)':'';
+                const cellTxt = st==='x'?React.createElement('span',{style:{color:'#4ade80',fontSize:'13px'}},'✓')
+                               :st==='!'?React.createElement('span',{style:{color:'#f87171',fontSize:'13px'}},'!')
+                               :st==='n'?React.createElement('span',{style:{color:'#475569',fontSize:'10px'}},'n/a')
+                               :null;
+                return React.createElement('td',{
+                  key:it.id,
+                  className:'clm-cell',
+                  style:{background:cellBg, borderBottom:'1px solid var(--border)'},
+                  onClick:()=>setOpenCell({bvNum:bv.num,itemId:it.id})
+                },
+                  React.createElement('div',{className:'clm-cell-inner'}, cellTxt),
+                  hasNote?React.createElement('div',{className:'clm-note-dot'}):null
+                );
+              }))
+            );
+          })
+        )
+      )
+    ),
+    openCell&&React.createElement(ClCellPopup,{
+      key:openCell.bvNum+'-'+openCell.itemId,
+      bvNum:openCell.bvNum,
+      item:getItem(openCell.itemId),
+      cellData:getCellData(openCell.bvNum,openCell.itemId),
+      onClose:()=>setOpenCell(null),
+      onSave:(val)=>handleSave(openCell.bvNum,openCell.itemId,val)
+    })
+  );
+}
+
+
+/* ══════════════════════════════════════════════════════════════
+   TAGESPLANUNG VIEW
+══════════════════════════════════════════════════════════════ */
+const DAYS = ['Mo','Di','Mi','Do','Fr'];
+
+function TagesplanungView({tagesplanData,setTagesplanData,saveTagesplan,activeBVs}) {
+  const cur = getKWNow();
+  const [kw,setKw] = useState(cur.kw);
+  const [year,setYear] = useState(cur.year);
+  const [showAll,setShowAll] = useState(false);
+
+  const kwKey = `${kw}-${year}`;
+  const mon = getMonday(kw,year);
+  const days = Array.from({length:5},(_,i)=>{ const d=new Date(mon); d.setDate(d.getDate()+i); return d; });
+
+  const todayStr = fmtDD(new Date());
+  const bvList = showAll ? activeBVs : activeBVs.slice(0,20);
+
+  const getCellVal=(bvNum,dayIdx)=>(tagesplanData[kwKey]?.[bvNum]?.[dayIdx])||'';
+  const setCell=(bvNum,dayIdx,val)=>{
+    const next={...tagesplanData,[kwKey]:{...(tagesplanData[kwKey]||{}),[bvNum]:{...(tagesplanData[kwKey]?.[bvNum]||{}),[dayIdx]:val}}};
+    setTagesplanData(next);saveTagesplan(next);
+  };
+
+  const prevKW=()=>{ if(kw===1){setKw(52);setYear(y=>y-1)}else setKw(k=>k-1) };
+  const nextKW=()=>{ if(kw===52){setKw(1);setYear(y=>y+1)}else setKw(k=>k+1) };
+  const goToday=()=>{ const c=getKWNow();setKw(c.kw);setYear(c.year) };
+
+  return (
+    <div className="page-wide">
+      <div className="tp-controls">
+        <div className="tp-kw-nav">
+          <button className="btn-sm" onClick={prevKW}>‹</button>
+          <div style={{textAlign:'center'}}>
+            <div className="tp-kw-label">KW {kw} / {year}</div>
+            <div className="tp-kw-dates">{fmtDD(days[0])} – {fmtDD(days[4])}</div>
+          </div>
+          <button className="btn-sm" onClick={nextKW}>›</button>
+        </div>
+        <button className="btn-sm" onClick={goToday}>Heute</button>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--muted)',cursor:'pointer',marginLeft:'auto'}}>
+          <input type="checkbox" checked={showAll} onChange={e=>setShowAll(e.target.checked)} style={{accentColor:'var(--accent)'}}/>
+          Alle BV anzeigen
+        </label>
+      </div>
+
+      <div className="tp-wrap">
+        <table className="tp-table">
+          <thead>
+            <tr>
+              <th className="tp-th-bv">BV</th>
+              {days.map((d,i)=>(
+                <th key={i} className={`tp-th-day${fmtDD(d)===todayStr?' today':''}`}>
+                  {DAYS[i]}<br/>
+                  <span style={{fontWeight:400}}>{fmtDD(d)}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bvList.map(bv=>(
+              <tr key={bv.num}>
+                <td className="tp-td-bv" title={bv.num}>{bv.name.replace('BV ','')}</td>
+                {days.map((_,dayIdx)=>(
+                  <td key={dayIdx} className="tp-cell">
+                    <textarea className="tp-cell-inp"
+                      value={getCellVal(bv.num,dayIdx)}
+                      onChange={e=>setCell(bv.num,dayIdx,e.target.value)}
+                      placeholder="…"/>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!showAll && activeBVs.length>20 && (
+        <div style={{marginTop:10,fontSize:12,color:'var(--muted)',textAlign:'center'}}>
+          {activeBVs.length-20} weitere BV ausgeblendet.
+          <button className="btn-sm" style={{marginLeft:8}} onClick={()=>setShowAll(true)}>Alle anzeigen</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   STAMMDATEN HANDWERKER
+══════════════════════════════════════════════════════════════ */
+function HandwerkerCard({hw,onChange,onDelete}) {
+  const [editing,setEditing] = useState(!hw.firma);
+  return (
+    <div className="hk-card">
+      <div className="hk-card-header">
+        {editing ? (
+          <input className="hk-inp" style={{fontSize:14,fontWeight:600,flex:1}} placeholder="Firma / Name"
+            value={hw.firma} onChange={e=>onChange({...hw,firma:e.target.value})} autoFocus/>
+        ) : (
+          <span className="hk-firma">{hw.firma||'–'}</span>
+        )}
+        <span className="hk-gewerk-badge">{hw.gewerk||'–'}</span>
+      </div>
+
+      <div className="hk-field">
+        <span>Gewerk</span>
+        <select className="hk-sel" value={hw.gewerk||''} onChange={e=>onChange({...hw,gewerk:e.target.value})} style={{flex:1}}>
+          <option value="">— wählen —</option>
+          {GEWERKE.map(g=><option key={g} value={g}>{g}</option>)}
+          <option value="Lüftungsarbeiten">Lüftungsarbeiten</option>
+          <option value="Kran">Kran</option>
+          <option value="Betonpumpe">Betonpumpe</option>
+          <option value="Gerüstbau">Gerüstbau</option>
+          <option value="Sonstiges">Sonstiges</option>
+        </select>
+      </div>
+      <div className="hk-field">
+        <span>Ansprechp.</span>
+        <input className="hk-inp" placeholder="Name" value={hw.name||''} onChange={e=>onChange({...hw,name:e.target.value})}/>
+      </div>
+      <div className="hk-field">
+        <span>Telefon</span>
+        <input className="hk-inp" placeholder="0123 456789" value={hw.tel||''} onChange={e=>onChange({...hw,tel:e.target.value})}/>
+      </div>
+      <div className="hk-field">
+        <span>E-Mail</span>
+        <input className="hk-inp" placeholder="info@firma.de" value={hw.email||''} onChange={e=>onChange({...hw,email:e.target.value})}/>
+      </div>
+      <div className="hk-field">
+        <span>Notiz</span>
+        <input className="hk-inp" placeholder="Bemerkung…" value={hw.notiz||''} onChange={e=>onChange({...hw,notiz:e.target.value})}/>
+      </div>
+      <div style={{display:'flex',justifyContent:'flex-end',marginTop:10}}>
+        <button className="btn-sm danger" onClick={onDelete}>Löschen</button>
+      </div>
+    </div>
+  );
+}
+
+function StammdatenView({handwerker,setHandwerker,saveHandwerker}) {
+  const [filterGw,setFilterGw] = useState('');
+  const allGw = [...new Set([...GEWERKE,...handwerker.map(h=>h.gewerk).filter(Boolean)])].sort();
+
+  const update=(id,updated)=>{
+    const next=handwerker.map(h=>h.id===id?updated:h);
+    setHandwerker(next);saveHandwerker(next);
+  };
+  const del=(id)=>{
+    const next=handwerker.filter(h=>h.id!==id);
+    setHandwerker(next);saveHandwerker(next);
+  };
+  const add=()=>{
+    const neu={id:uid(),firma:'',name:'',gewerk:filterGw||'',tel:'',email:'',notiz:''};
+    const next=[...handwerker,neu];
+    setHandwerker(next);saveHandwerker(next);
+  };
+
+  const filtered = filterGw ? handwerker.filter(h=>h.gewerk===filterGw) : handwerker;
+
+  return (
+    <div className="page">
+      <div className="hk-toolbar">
+        <button className="btn-primary" onClick={add}>+ Handwerker hinzufügen</button>
+        <div className="hk-gw-filter">
+          <button className={`btn-sm${!filterGw?' active':''}`}
+            style={!filterGw?{background:'var(--accent)',borderColor:'var(--accent)',color:'#0d1117',fontWeight:700}:{}}
+            onClick={()=>setFilterGw('')}>Alle ({handwerker.length})</button>
+          {allGw.filter(g=>handwerker.some(h=>h.gewerk===g)).map(g=>(
+            <button key={g}
+              className={`btn-sm${filterGw===g?' active':''}`}
+              style={filterGw===g?{background:'var(--accent)',borderColor:'var(--accent)',color:'#0d1117',fontWeight:700}:{}}
+              onClick={()=>setFilterGw(g)}>
+              {g} ({handwerker.filter(h=>h.gewerk===g).length})
             </button>
           ))}
         </div>
       </div>
-
-      {orderedProjects.length === 0 && <div className="empty">Noch keine Projekte. Füge das erste BV hinzu.</div>}
-
-      {orderedProjects.map((p, idx) => (
-        <ProjectCard key={p.id} project={p} filterAss={filterAss} filterSt={filterSt}
-          isDragging={draggingId===p.id}
-          isDragOver={dragOverId===p.id && draggingId!==p.id}
-          dragHandleProps={{
-            draggable: true,
-            onDragStart: (e) => { e.stopPropagation(); handleDragStart(idx, p.id); },
-            ...makeTouchHandlers(idx, p.id),
-          }}
-          onUpdate={updated => update(orderedProjects.map(x => x.id===p.id?updated:x))}
-          onDelete={() => update(orderedProjects.filter(x => x.id!==p.id))}
-          onDragEnter={() => handleDragEnter(idx, p.id)}
-          onDragEnd={handleDragEnd}
-        />
-      ))}
-
-      {addingBV ? (
-        <div className="add-bv-row">
-          <input className="add-bv-inp" placeholder="Name des neuen BV…" value={newBVName}
-            onChange={e=>setNewBVName(e.target.value)}
-            onKeyDown={e=>{ if(e.key==="Enter") addProject(); if(e.key==="Escape"){ setAddingBV(false); setNewBVName(""); }}}
-            autoFocus
-          />
-          <button className="btn-primary" onClick={addProject}>Erstellen</button>
-          <button className="btn-cancel" onClick={() => { setAddingBV(false); setNewBVName(""); }}>Abbrechen</button>
+      {filtered.length===0 && (
+        <div className="empty">
+          {filterGw ? `Keine Handwerker für Gewerk "${filterGw}".` : 'Noch keine Handwerker angelegt.'}
+          <br/><button className="btn-primary" style={{marginTop:12}} onClick={add}>Ersten Handwerker anlegen</button>
         </div>
-      ) : (
-        <button className="btn-primary" style={{marginTop:12}} onClick={() => setAddingBV(true)}>+ Neues BV</button>
       )}
+      <div className="hk-grid">
+        {filtered.map(hw=>(
+          <HandwerkerCard key={hw.id} hw={hw}
+            onChange={updated=>update(hw.id,updated)}
+            onDelete={()=>del(hw.id)}/>
+        ))}
+      </div>
     </div>
   );
 }
 
+
 /* ══════════════════════════════════════════════════════════════
-   PDF EXPORT (top-level, kein React-State)
+   PDF EXPORT
 ══════════════════════════════════════════════════════════════ */
 function exportPDF(projects) {
-  const btn = document.getElementById("pdf-btn");
-  if (btn) { btn.textContent = "Erstelle..."; btn.disabled = true; }
-
-  function doExport() {
+  const btn=document.getElementById("pdf-btn");
+  if(btn){btn.textContent="Erstelle...";btn.disabled=true}
+  function doExport(){
     try {
-      const { jsPDF } = window.jspdf;
-      const doc = new jsPDF({ orientation:"portrait", unit:"mm", format:"a4" });
-      const pw = 180, ml = 15;
-      const SL = { offen:"Offen", "in-arbeit":"In Arbeit", wartend:"Wartend", erledigt:"Erledigt" };
-      const SC = { offen:[71,85,105], "in-arbeit":[146,64,14], wartend:[67,56,202], erledigt:[22,101,52] };
-      const SB = { offen:[241,245,249], "in-arbeit":[254,249,236], wartend:[243,242,255], erledigt:[240,255,246] };
-      const AC = { HP:[26,111,181], DP:[181,90,26] };
-      const date = new Date().toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"});
-      const tot = projects.reduce((s,p)=>s+p.tasks.length,0);
-
-      doc.setFillColor(15,23,42);
-      doc.roundedRect(ml,12,pw,12,2,2,"F");
-      doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.setTextColor(255,255,255);
-      doc.text("BV-Aufgabenliste", ml+4, 20);
-      doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(148,163,184);
-      doc.text("Erstellt: "+date+"  |  "+projects.length+" Projekte  |  "+tot+" Aufgaben", ml+pw-4, 20, {align:"right"});
-
-      let y = 28;
-      const lh = 7;
-      const np = (n) => { if (y+n > 282) { doc.addPage(); y=15; } };
-
-      for (const p of projects) {
-        np(14);
-        doc.setFillColor(30,41,59); doc.rect(ml,y,pw,8,"F");
-        doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(255,255,255);
-        doc.text(p.name, ml+3, y+5.5);
-        doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(148,163,184);
-        doc.text(p.tasks.length+" Tasks", ml+pw-3, y+5.5, {align:"right"});
-        y+=8;
-
-        doc.setFillColor(248,250,252); doc.rect(ml,y,pw,6,"F");
-        doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.setTextColor(100,116,139);
-        doc.text("Aufgabe", ml+3, y+4);
-        doc.text("Status", ml+pw*0.72, y+4, {align:"center"});
-        doc.text("Wer", ml+pw*0.92, y+4, {align:"center"});
-        doc.setDrawColor(226,232,240); doc.setLineWidth(0.2);
-        doc.line(ml,y+6,ml+pw,y+6);
-        y+=6;
-
-        for (let i=0; i<p.tasks.length; i++) {
-          const t = p.tasks[i];
-          const sl = SL[t.status]||t.status;
-          const sbg = SB[t.status]||[241,245,249];
-          const sfg = SC[t.status]||[71,85,105];
-          const afg = AC[t.assignee]||[136,136,136];
-          const done = t.status==="erledigt";
-          const hn = !!(t.note&&t.note.trim());
-          const hs = !!(t.subtasks&&t.subtasks.length>0);
-          const rh = lh + (hn?4:0) + (hs?t.subtasks.length*4:0);
-          np(rh+1);
-          const rb = i%2===0?[248,250,252]:[255,255,255];
-          doc.setFillColor(...rb);  doc.rect(ml,y,pw*0.62,rh,"F");
-          doc.setFillColor(...sbg); doc.rect(ml+pw*0.62,y,pw*0.22,rh,"F");
-          doc.setFillColor(...rb);  doc.rect(ml+pw*0.84,y,pw*0.16,rh,"F");
-          doc.setFont("helvetica","normal"); doc.setFontSize(9);
-          doc.setTextColor(...(done?[180,180,180]:[34,34,34]));
-          doc.text(doc.splitTextToSize(t.title,pw*0.58)[0], ml+3, y+5);
-          if (hn) {
-            doc.setFont("helvetica","italic"); doc.setFontSize(7.5); doc.setTextColor(102,102,102);
-            doc.text(doc.splitTextToSize(t.note,pw*0.58)[0], ml+3, y+9);
-          }
-          if (hs) {
-            let sy=y+(hn?13:9);
-            t.subtasks.forEach(s=>{
-              doc.setFont("helvetica","normal"); doc.setFontSize(7.5); doc.setTextColor(s.done?180:100);
-              doc.text((s.done?"v ":"- ")+s.title, ml+5, sy); sy+=4;
-            });
-          }
-          doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...sfg);
-          doc.text(sl, ml+pw*0.73, y+5, {align:"center"});
-          doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...afg);
-          doc.text(t.assignee, ml+pw*0.92, y+5, {align:"center"});
-          doc.setDrawColor(226,232,240); doc.setLineWidth(0.15);
-          doc.line(ml,y+rh,ml+pw,y+rh);
-          y+=rh;
-        }
-        y+=5;
+      const{jsPDF}=window.jspdf;
+      const doc=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
+      const pw=180,ml=15;
+      const SL={offen:"Offen","in-arbeit":"In Arbeit",wartend:"Wartend",erledigt:"Erledigt"};
+      const SC={offen:[71,85,105],"in-arbeit":[146,64,14],wartend:[67,56,202],erledigt:[22,101,52]};
+      const SB={offen:[241,245,249],"in-arbeit":[254,249,236],wartend:[243,242,255],erledigt:[240,255,246]};
+      const AC={HP:[26,111,181],DP:[181,90,26]};
+      const date=new Date().toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"});
+      const tot=projects.reduce((s,p)=>s+p.tasks.length,0);
+      doc.setFillColor(15,23,42);doc.roundedRect(ml,12,pw,12,2,2,"F");
+      doc.setFont("helvetica","bold");doc.setFontSize(12);doc.setTextColor(255,255,255);
+      doc.text("BV-Aufgabenliste",ml+4,20);
+      doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(148,163,184);
+      doc.text("Erstellt: "+date+"  |  "+projects.length+" Projekte  |  "+tot+" Aufgaben",ml+pw-4,20,{align:"right"});
+      let y=28;const lh=7;
+      const np=(n)=>{if(y+n>282){doc.addPage();y=15}};
+      for(const p of projects){
+        np(14);doc.setFillColor(30,41,59);doc.rect(ml,y,pw,8,"F");
+        doc.setFont("helvetica","bold");doc.setFontSize(10);doc.setTextColor(255,255,255);doc.text(p.name,ml+3,y+5.5);
+        doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(148,163,184);doc.text(p.tasks.length+" Tasks",ml+pw-3,y+5.5,{align:"right"});y+=8;
+        doc.setFillColor(248,250,252);doc.rect(ml,y,pw,6,"F");doc.setFont("helvetica","bold");doc.setFontSize(7.5);doc.setTextColor(100,116,139);
+        doc.text("Aufgabe",ml+3,y+4);doc.text("Status",ml+pw*0.72,y+4,{align:"center"});doc.text("Wer",ml+pw*0.92,y+4,{align:"center"});
+        doc.setDrawColor(226,232,240);doc.setLineWidth(0.2);doc.line(ml,y+6,ml+pw,y+6);y+=6;
+        for(let i=0;i<p.tasks.length;i++){
+          const t=p.tasks[i];const sl=SL[t.status]||t.status;const sbg=SB[t.status]||[241,245,249];const sfg=SC[t.status]||[71,85,105];const afg=AC[t.assignee]||[136,136,136];
+          const done=t.status==="erledigt";const hn=!!(t.note&&t.note.trim());const hs=!!(t.subtasks&&t.subtasks.length>0);
+          const rh=lh+(hn?4:0)+(hs?t.subtasks.length*4:0);np(rh+1);
+          const rb=i%2===0?[248,250,252]:[255,255,255];
+          doc.setFillColor(...rb);doc.rect(ml,y,pw*0.62,rh,"F");doc.setFillColor(...sbg);doc.rect(ml+pw*0.62,y,pw*0.22,rh,"F");doc.setFillColor(...rb);doc.rect(ml+pw*0.84,y,pw*0.16,rh,"F");
+          doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(...(done?[180,180,180]:[34,34,34]));doc.text(doc.splitTextToSize(t.title,pw*0.58)[0],ml+3,y+5);
+          if(hn){doc.setFont("helvetica","italic");doc.setFontSize(7.5);doc.setTextColor(102,102,102);doc.text(doc.splitTextToSize(t.note,pw*0.58)[0],ml+3,y+9)}
+          if(hs){let sy=y+(hn?13:9);t.subtasks.forEach(s=>{doc.setFont("helvetica","normal");doc.setFontSize(7.5);doc.setTextColor(s.done?180:100);doc.text((s.done?"v ":"- ")+s.title,ml+5,sy);sy+=4})}
+          doc.setFont("helvetica","bold");doc.setFontSize(8);doc.setTextColor(...sfg);doc.text(sl,ml+pw*0.73,y+5,{align:"center"});
+          doc.setFont("helvetica","bold");doc.setFontSize(9);doc.setTextColor(...afg);doc.text(t.assignee,ml+pw*0.92,y+5,{align:"center"});
+          doc.setDrawColor(226,232,240);doc.setLineWidth(0.15);doc.line(ml,y+rh,ml+pw,y+rh);y+=rh;
+        }y+=5;
       }
       const pages=doc.getNumberOfPages();
-      for(let i=1;i<=pages;i++){
-        doc.setPage(i);
-        doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(150,150,150);
-        doc.text("Seite "+i+" / "+pages, 195, 290, {align:"right"});
-      }
+      for(let i=1;i<=pages;i++){doc.setPage(i);doc.setFont("helvetica","normal");doc.setFontSize(7);doc.setTextColor(150,150,150);doc.text("Seite "+i+" / "+pages,195,290,{align:"right"})}
       doc.save("BV-Aufgabenliste_"+date.replace(/\./g,"-")+".pdf");
-    } catch(e) {
-      alert("Fehler: "+e.message);
-    } finally {
-      if (btn) { btn.textContent = "PDF exportieren"; btn.disabled = false; }
-    }
+    }catch(e){alert("PDF-Fehler: "+e.message)}
+    finally{if(btn){btn.textContent="PDF exportieren";btn.disabled=false}}
   }
-
-  if (window.jspdf) {
-    doExport();
-  } else {
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-    s.onload = doExport;
-    s.onerror = () => { alert("jsPDF konnte nicht geladen werden."); if(btn){btn.textContent="PDF exportieren";btn.disabled=false;} };
-    document.head.appendChild(s);
-  }
+  if(window.jspdf){doExport()}
+  else{const s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";s.onload=doExport;s.onerror=()=>{alert("jsPDF konnte nicht geladen werden.");if(btn){btn.textContent="PDF exportieren";btn.disabled=false}};document.head.appendChild(s)}
 }
 
 /* ══════════════════════════════════════════════════════════════
-   ROOT APP
+   APP ROOT
 ══════════════════════════════════════════════════════════════ */
+const APP_VERSION = "2.2.0-preview";
+
+
+/* ══════════════════════════════════════════════════════════════
+   DATENSICHERUNG
+══════════════════════════════════════════════════════════════ */
+function exportAllData(bvList, vergabeData, checklisteData, tagesplanData, handwerker, projects) {
+  const payload = {
+    version: APP_VERSION,
+    exportedAt: new Date().toISOString(),
+    bvList, vergabeData, checklisteData, tagesplanData, handwerker, projects
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const date = new Date().toISOString().slice(0,10);
+  a.href = url; a.download = `BV-Manager_Backup_${date}.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importAllData(file, cb) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const d = JSON.parse(e.target.result);
+      cb(d);
+    } catch(err) { alert('Fehler beim Einlesen der Datei: ' + err.message); }
+  };
+  reader.readAsText(file);
+}
+
 function App() {
-  const [tab, setTab]           = useState("jourfix");
-  const [projects, setProjects] = useState([]);
-  const [jfState, setJfState]   = useState({ active:{}, plan:{}, done:{} });
-  const [activeBVs, setActiveBVs] = useState([]);
-  const [planBVs,   setPlanBVs]   = useState([]);
-  const [doneBVs,   setDoneBVs]   = useState([]);
-  const [loaded, setLoaded]     = useState(false);
+  const [tab,setTab]               = useState("uebersicht");
+  const [projects,setProjects]     = useState(DEFAULT_TASKS);
+  const [bvList,setBvList]         = useState(EXCEL_BV_LIST);
+  const [vergabeData,setVergabeData]       = useState(()=>buildVergabe(EXCEL_BV_LIST,null));
+  const [checklisteData,setChecklisteData] = useState(()=>buildCheckliste(EXCEL_BV_LIST,null));
+  const [tagesplanData,setTagesplanData]   = useState({});
+  const [handwerker,setHandwerker]         = useState(DEFAULT_HW);
+  const [loaded,setLoaded] = useState(false);
 
-  useEffect(() => {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap";
+  useEffect(()=>{
+    const link=document.createElement("link");
+    link.rel="stylesheet";link.href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap";
     document.head.appendChild(link);
-    const el = document.createElement("style");
-    el.textContent = CSS;
-    document.head.appendChild(el);
-    return () => { document.head.removeChild(el); document.head.removeChild(link); };
-  }, []);
+    const el=document.createElement("style");el.textContent=CSS;document.head.appendChild(el);
+    return()=>{try{document.head.removeChild(el);document.head.removeChild(link)}catch{}};
+  },[]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const t = await window.storage.get(SK_TASKS);
-        setProjects(t?.value ? JSON.parse(t.value) : DEFAULT_TASKS);
-      } catch { setProjects(DEFAULT_TASKS); }
-
-      // BV-Listen laden
-      let aList = ACTIVE_BVS.map(b => ({...b, id: b.num}));
-      let pList = PLAN_BVS.map(b => ({...b, id: b.num}));
-      let dList = DONE_BVS.map(b => ({...b, id: b.num}));
-      try {
-        const bvs = await window.storage.get(SK_JF_BVS);
-        if (bvs?.value) { const p=JSON.parse(bvs.value); aList=p.active||aList; pList=p.plan||pList; dList=p.done||dList; }
-      } catch {}
-      setActiveBVs(aList);
-      setPlanBVs(pList);
-      setDoneBVs(dList);
-
-      // JF-Checks laden
-      try {
-        const j = await window.storage.get(SK_JOURFIX);
-        if (j?.value) setJfState(JSON.parse(j.value));
-        else {
-          const s = { active:{}, plan:{}, done:{} };
-          aList.forEach(b => { s.active[b.id]={}; JF_TOPICS_ACTIVE.forEach(t=>{ s.active[b.id][t.id]=false; }); });
-          pList.forEach(b => { s.plan[b.id]={};   JF_TOPICS_PLAN.forEach(t=>{   s.plan[b.id][t.id]=false;   }); });
-          dList.forEach(b => { s.done[b.id]={};   JF_TOPICS_DONE.forEach(t=>{   s.done[b.id][t.id]=false;   }); });
-          setJfState(s);
+  useEffect(()=>{
+    // Show app immediately with defaults — localStorage overrides applied async
+    setLoaded(true);
+    (async()=>{
+      try{const t=await window.storage.get(SK_TASKS);if(t?.value)setProjects(JSON.parse(t.value))}catch{}
+      try{
+        const b=await window.storage.get(SK_BVS);
+        const bvs=b?.value?JSON.parse(b.value):null;
+        if(bvs&&bvs.length>0){
+          setBvList(bvs);
+          // rebuild derived data with saved BV list
+          try{const vg=await window.storage.get(SK_VERGABE);setVergabeData(buildVergabe(bvs,vg?.value?JSON.parse(vg.value):null))}catch{setVergabeData(buildVergabe(bvs,null))}
+          try{const cl=await window.storage.get(SK_CHKLIST);setChecklisteData(buildCheckliste(bvs,cl?.value?JSON.parse(cl.value):null))}catch{setChecklisteData(buildCheckliste(bvs,null))}
+        } else {
+          try{const vg=await window.storage.get(SK_VERGABE);if(vg?.value)setVergabeData(buildVergabe(EXCEL_BV_LIST,JSON.parse(vg.value)))}catch{}
+          try{const cl=await window.storage.get(SK_CHKLIST);if(cl?.value)setChecklisteData(buildCheckliste(EXCEL_BV_LIST,JSON.parse(cl.value)))}catch{}
         }
-      } catch {}
-
-      setLoaded(true);
+      }catch(e){console.warn('Storage load:',e)}
+      try{const tp=await window.storage.get(SK_TPLAN);if(tp?.value)setTagesplanData(JSON.parse(tp.value))}catch{}
+      try{const hw=await window.storage.get(SK_HW);if(hw?.value)setHandwerker(JSON.parse(hw.value))}catch{}
     })();
-  }, []);
+  },[]);
 
-  const saveProjects = useCallback(data => {
-    window.storage.set(SK_TASKS, JSON.stringify(data)).catch(()=>{});
-  }, []);
-  const saveJF = useCallback(data => {
-    window.storage.set(SK_JOURFIX, JSON.stringify(data)).catch(()=>{});
-  }, []);
-  const saveBVs = useCallback((active, plan, done) => {
-    window.storage.set(SK_JF_BVS, JSON.stringify({active, plan, done})).catch(()=>{});
-  }, []);
+  const saveProjects   = useCallback(d=>window.storage.set(SK_TASKS,JSON.stringify(d)).catch(()=>{}),[]);
+  const saveBvList     = useCallback(d=>window.storage.set(SK_BVS,JSON.stringify(d)).catch(()=>{}),[]);
+  const saveVergabe    = useCallback(d=>window.storage.set(SK_VERGABE,JSON.stringify(d)).catch(()=>{}),[]);
+  const saveCheckliste = useCallback(d=>window.storage.set(SK_CHKLIST,JSON.stringify(d)).catch(()=>{}),[]);
+  const saveTagesplan  = useCallback(d=>window.storage.set(SK_TPLAN,JSON.stringify(d)).catch(()=>{}),[]);
+  const saveHandwerker = useCallback(d=>window.storage.set(SK_HW,JSON.stringify(d)).catch(()=>{}),[]);
 
-  const projectsRef = useRef(projects);
-  useEffect(() => { projectsRef.current = projects; }, [projects]);
+  const importFileRef = useRef(null);
+  const handleImport = (d) => {
+    if (!d) return;
+    if (d.bvList)         { setBvList(d.bvList);          saveBvList(d.bvList); }
+    if (d.vergabeData)    { setVergabeData(d.vergabeData); saveVergabe(d.vergabeData); }
+    if (d.checklisteData) { setChecklisteData(d.checklisteData); saveCheckliste(d.checklisteData); }
+    if (d.tagesplanData)  { setTagesplanData(d.tagesplanData); saveTagesplan(d.tagesplanData); }
+    if (d.handwerker)     { setHandwerker(d.handwerker);   saveHandwerker(d.handwerker); }
+    if (d.projects)       { setProjects(d.projects);       saveProjects(d.projects); }
+    alert('Import erfolgreich! ' + (d.exportedAt ? 'Stand: '+d.exportedAt.slice(0,10) : ''));
+  };
 
-  if (!loaded) return (
-    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"#7d8590",fontFamily:"sans-serif"}}>
+  const rohbauBVs = useMemo(()=>bvList.filter(b=>b.status==='rohbau'),[bvList]);
+
+  // Keep vergabeData in sync when new BVs are added
+  useEffect(()=>{
+    setVergabeData(prev=>{
+      let changed=false;
+      const next={...prev};
+      bvList.forEach(bv=>{
+        if(!next[bv.num]){
+          const raw=EXCEL_VG[bv.num]||[];
+          const e={};
+          GEWERKE.forEach((g,i)=>{e[g]={status:normV(raw[i]||''),hw:''};});
+          next[bv.num]=e;
+          changed=true;
+        }
+      });
+      return changed?next:prev;
+    });
+  },[bvList]);
+
+  if(!loaded) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"#7d8590",fontFamily:"sans-serif",fontSize:14}}>
       Lade…
     </div>
   );
 
+  const TABS = [
+    {id:"uebersicht", label:"🏗 Übersicht BV"},
+    {id:"aufgaben",   label:"◈ Aufgaben"},
+    {id:"vergabe",    label:"⊞ Vergabe"},
+    {id:"checkliste", label:"☑ Checkliste"},
+    {id:"tagesplan",  label:"📅 Tagesplanung"},
+    {id:"stammdaten", label:"👷 Handwerker"},
+  ];
+
   return (
     <div>
       <nav className="nav">
-        <button className={`nav-btn${tab==="jourfix"?" active":""}`} onClick={() => setTab("jourfix")}>
-          ✓ Jour Fix
-        </button>
-        <button className={`nav-btn${tab==="tasks"?" active":""}`} onClick={() => setTab("tasks")}>
-          ◈ Aufgaben
-        </button>
-        <div className="nav-spacer" />
-        {tab === "tasks" && (
-          <button id="pdf-btn" className="print-btn" onClick={() => exportPDF(projects)}>
-            PDF exportieren
-          </button>
+        {TABS.map(t=>(
+          <button key={t.id} className={`nav-btn${tab===t.id?" active":""}`} onClick={()=>setTab(t.id)}>{t.label}</button>
+        ))}
+        <div className="nav-spacer"/>
+        {tab==="aufgaben" && (
+          <button id="pdf-btn" className="print-btn" onClick={()=>exportPDF(projects)}>PDF exportieren</button>
         )}
+        <button className="print-btn" style={{color:'#4ade80',borderColor:'rgba(74,222,128,.3)'}}
+          onClick={()=>exportAllData(bvList,vergabeData,checklisteData,tagesplanData,handwerker,projects)}
+          title="Alle Daten als JSON-Backup herunterladen">
+          ⬇ Backup
+        </button>
+        <button className="print-btn" style={{color:'#f59e0b',borderColor:'rgba(245,158,11,.3)'}}
+          onClick={()=>importFileRef.current?.click()}
+          title="Backup wiederherstellen">
+          ⬆ Restore
+        </button>
+        <input ref={importFileRef} type="file" accept=".json" style={{display:'none'}}
+          onChange={e=>{const f=e.target.files[0];if(f)importAllData(f,handleImport);e.target.value='';}}/>
       </nav>
 
-      {tab === "jourfix" ? (
-        <JourFixView
-          jfState={jfState} setJfState={setJfState} saveJF={saveJF}
-          activeBVs={activeBVs} setActiveBVs={setActiveBVs}
-          planBVs={planBVs}     setPlanBVs={setPlanBVs}
-          doneBVs={doneBVs}     setDoneBVs={setDoneBVs}
-          saveBVs={saveBVs}
-        />
-      ) : (
-        <TaskManagerView projects={projects} setProjects={setProjects} saveProjects={saveProjects} />
-      )}
+      {tab==="uebersicht" && <UebersichtBVView bvList={bvList} setBvList={setBvList} saveBvList={saveBvList}/>}
+      {tab==="aufgaben"   && <TaskManagerView projects={projects} setProjects={setProjects} saveProjects={saveProjects}/>}
+      {tab==="vergabe"    && <VergabeView vergabeData={vergabeData} setVergabeData={setVergabeData} saveVergabe={saveVergabe} allBVs={bvList} handwerker={handwerker}/>}
+      {tab==="checkliste" && <ChecklisteView checklisteData={checklisteData} setChecklisteData={setChecklisteData} saveCheckliste={saveCheckliste} allBVs={bvList}/>}
+      {tab==="tagesplan"  && <TagesplanungView tagesplanData={tagesplanData} setTagesplanData={setTagesplanData} saveTagesplan={saveTagesplan} activeBVs={rohbauBVs}/>}
+      {tab==="stammdaten" && <StammdatenView handwerker={handwerker} setHandwerker={setHandwerker} saveHandwerker={saveHandwerker}/>}
+
+      <div style={{position:"fixed",bottom:10,right:14,fontSize:11,color:"rgba(255,255,255,.35)",fontFamily:"var(--mono)",pointerEvents:"none",zIndex:9999,background:"rgba(0,0,0,.3)",padding:"2px 8px",borderRadius:4}}>
+        v{APP_VERSION}
+      </div>
     </div>
   );
 }
 
-ReactDOM.createRoot || (ReactDOM.createRoot = (el) => ({ render: (c) => ReactDOM.render(c, el) }));
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 </script>
-
 </body>
 </html>
